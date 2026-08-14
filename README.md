@@ -1,119 +1,188 @@
 # dsh-multi-agent-orchestrator
 
-DeepSeek Harness 的多智能体编排插件：一个可切换的 Agent 模式（agent preset），
+> DeepSeek Harness 多智能体编排模式 — 灵感来自 [oh-my-opencode-slim](https://github.com/alvinunreal/oh-my-opencode-slim)
+
 以 **Orchestrator** 为控制平面，调度 **Explorer / Librarian / Observer /
-Oracle / Designer / Fixer** 六个职责严格隔离的专职子代理，完整实现
-“调查 → 判断 → 执行 → 验证”的工作流。
+Oracle / Designer / Fixer** 六个职责严格隔离的专职子代理，在 DeepSeek
+Harness 中实现“调查 → 判断 → 执行 → 验证”的完整工作流。
 
-设计目标（与设计文档一致）：
-
-> **Harness 管“怎么运行 Agent”；Plugin 管“为什么调用哪个 Agent”。**
-
-本插件**不重新实现** harness 的 agent 循环、工具调用、会话、权限、子代理、
-上下文压缩——全部复用宿主能力。插件只做一件事：**注册职责隔离的代理，并
-决定何时把工作委派给谁**。
+本插件是一个 **DSH agent preset（可切换的模式）**：安装后可在 Web 界面
+的 Agent preset 选择器中与 `standard`（标准模式）、`code`、`minimal`、
+`cordis` 并列选择，随时切换，互不影响。
 
 ---
 
-## 一、安装
+## 灵感来源
+
+本项目是对 [oh-my-opencode-slim](https://github.com/alvinunreal/oh-my-opencode-slim)
+（opencode 平台的精简多智能体套件）在 DeepSeek Harness 上的移植与适配。
+
+| 概念 | oh-my-opencode-slim（opencode） | 本项目（DeepSeek Harness） |
+| --- | --- | --- |
+| 模式/Agent 定义 | `opencode.json` + markdown 模式文件 | `agent.cordis.yml` 组合文件 + `prompts/*.md` |
+| 子代理 | 内置 `task` 工具 + 模式切换 | `@deepseek-ai/dsh-tool-subagent` 委派工具 × 6 |
+| 权限隔离 | 每模式 `allow`/`deny` 工具列表 | 每子代理 `toolFilter` → 编译为 `tools.restrict()` |
+| 委托深度限制 | 角色内配置 | 宿主 `maxDepth` 机制 |
+| 模型混用 | 每 Agent 指定 model | `agentOptions`（provider/model/maxTokens） |
+| 宿主 | opencode | DeepSeek Harness（零侵入，纯增量 preset） |
+
+设计文档中的角色分工（Orchestrator 路由、信息生产者/决策者/执行者分离、
+envelope 返回协议）均与 oh-my-opencode-slim 一脉相承，并利用 DSH 的
+原生能力做了机械化的权限强制。
+
+---
+
+## 特性
+
+- 🎛️ **Orchestrator 控制平面**：理解目标、拆解任务、路由调度、整合结果、向用户汇报
+- 🔍 **Explorer**：仓库静态事实（文件、符号、调用链、结构、已有模式）
+- 📚 **Librarian**：外部知识（官方文档、第三方库、API、版本、标准）
+- 👀 **Observer**：运行事实（测试输出、日志、截图、UI、复现）
+- 🧠 **Oracle**：深度技术推理（根因、架构权衡、并发、安全、性能）
+- 🎨 **Designer**：视觉/交互判断（UI/UX、布局、可访问性、规范输出）
+- 🔧 **Fixer**：执行修改（唯一拥有 write/edit 的代理）
+- 🛡️ **权限隔离**：工具面由 `toolFilter` 机械强制，非仅提示词约束
+- 🚫 **禁止代理图**：`maxDepth: 1` + 过滤器双重保证 specialist 无法再生成代理
+- ⚙️ **模型混用**：每个 specialist 可独立配置 provider / model / maxTokens
+- 🔌 **零侵入**：不修改宿主任何文件，卸载即删目录
+
+---
+
+## 快速开始
+
+### 环境要求
+
+- DeepSeek Harness（Web 界面，默认 http://127.0.0.1:3080）
+- Node.js ≥ 22（仅构建/安装脚本需要，运行时不需要）
+
+### 安装
+
+**方式一：直接使用已构建的 preset（推荐，无需构建）**
 
 ```powershell
-# 1. 构建 preset（已提交的 preset/orchestrator/ 也可直接使用）
-node scripts/build.mjs
-
-# 2. 安装到 DSH 用户目录（默认 $DSH_HOME = ~/.dsh）
-node scripts/install.mjs
-
-# 3. 验证
-node scripts/validate.mjs
-node --test tests/
+# 把 preset 目录复制到 DSH 用户目录
+$dsHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { "$env:USERPROFILE\.dsh" }
+Copy-Item -Recurse .\preset\orchestrator "$dsHome\.agent-presets\orchestrator"
 ```
 
-安装脚本会把 `preset/orchestrator/` 复制到
-`$DSH_HOME/.agent-presets/orchestrator/`。Web 界面实时读取该目录，
-无需重启：打开会话开始处的 **Agent preset 选择器**（或 设置 → Agent preset），
-选择 **“多智能体编排”** 即可。卸载 = 删除该目录，宿主恢复原样。
+**方式二：通过脚本安装（自动构建 + 复制）**
 
-> 该模式是纯增量的：不修改任何宿主行、不覆盖 provider/MCP、不动
-> `standard`/`code`/`minimal`/`cordis` 预设、不写入 profile patch 层。
+```powershell
+node scripts/build.mjs        # 从 src/ + prompts/ 生成 preset/orchestrator/
+node scripts/install.mjs      # 复制到 $DSH_HOME/.agent-presets/orchestrator/
+```
 
-## 一·五、启用与切换（Web 界面）
+**方式三：npm 包（从 registry 安装后执行）**
 
-启用路径有两条，均在 Web 界面（默认 http://127.0.0.1:3080）完成：
+```bash
+npm pack dsh-multi-agent-orchestrator   # 或 clone 仓库
+tar -xzf dsh-multi-agent-orchestrator-*.tgz
+node package/scripts/install.mjs
+```
 
-1. **按会话启用**：在“新会话”界面（composer 上方）找到 **Agent preset** 选择
-   chip（在 workspace 选择旁边），点开选择 **多智能体编排**，然后开始会话。
-   该选择只影响这一个会话；运行中的会话保持它开始时的 preset。
+### 启用与切换（Web 界面）
+
+安装后无需重启，Web 界面实时读取 `$DSH_HOME/.agent-presets/`。两种启用路径：
+
+1. **按会话启用**：打开“新会话”界面（composer 上方），在 **Agent preset**
+   选择 chip（位于 workspace 选择旁边）中点击，选择 **多智能体编排**，
+   然后开始会话。该选择只影响这一个会话。
 2. **设为默认**：设置（Settings）→ General → **Agent preset** → 选择
-   **多智能体编排** 并 “Set as default”。之后新建的会话默认使用该模式。
+   **多智能体编排** → 点击 **Set as default**。之后新建的会话默认使用该模式。
 
-切换回来同样简单：任一路径选择回 **标准模式**（standard）即可。两种模式共存，
-互不影响；标准模式的一切能力保持不变。
+切换回标准模式：同样路径选择 **标准模式（standard）** 即可。
 
-> 注意：preset 在会话创建时固定。已经产生过内容的会话不能中途切换 preset
-> （工具目录会与历史日志不一致）；空白会话可以在创建后、首次输入前切换。
+> **注意**：preset 在会话创建时固定。已产生内容的会话不能中途切换 preset
+> （工具目录会与历史日志不一致）；空白会话可在创建后、首次输入前切换。
+
+### 卸载
+
+```powershell
+$dsHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { "$env:USERPROFILE\.dsh" }
+Remove-Item -Recurse "$dsHome\.agent-presets\orchestrator"
+```
+
+删除目录即完成卸载，宿主恢复原样，不影响任何其他模式。
+
+### 验证安装
+
+```powershell
+node scripts/validate.mjs     # 真实 loader 方言解析 + 行名解析 + 过滤器校验
+node --test tests/            # 45 项测试（含真实挂载集成测试）
+node scripts/smoke-mount.mjs  # 真实启动 harness 并挂载 preset 的集成验证
+```
 
 ---
 
-## 二、模式结构（“模式” = DSH agent preset）
+## 详细使用说明
+
+### 1. 工作流
+
+Orchestrator 强制执行：
 
 ```
-preset/orchestrator/
-├── agent.cordis.yml       # 组合文件：Orchestrator persona + 六个委派工具 + 边界行
-├── preset.yml             # 显示元数据（选择器中的名称/描述）
-└── orchestration.mjs      # 边界行：agent/created 时收紧根代理的工具面
+facts before decisions
+decisions before actions
+actions before verification
+verification before completion
 ```
 
-- **Orchestrator** = 会话代理本身。它的 persona 是完整系统提示词
-  （`complete: true`），包含身份、任务、路由策略（§17）、工作流（§27）、
-  委派协议与收尾报告格式。
-- **六个 specialist** = 通过六个 `@deepseek-ai/dsh-tool-subagent` 实例生成：
-  `subagent_explorer`、`subagent_librarian`、`subagent_observer`、
-  `subagent_oracle`、`subagent_designer`、`subagent_fixer`。每个实例自带
-  **专属 persona**、**toolFilter**（编译进子代理作用域的 `tools.restrict()`，
-  是真正的权限边界而非提示词约束）、以及 **maxDepth: 1**。
-- **maxDepth: 1** 的语义：Orchestrator（深度 0）可以生成 specialist
-  （深度 1）；specialist 再试图生成任何代理都会因深度 2 > 1 被宿主拒绝。
-  加上 toolFilter 完全不给 specialist 暴露 `subagent_*` 工具，
-  “specialist 不能调用其他 specialist” 有双重机械保证。
-- **边界行 orchestration.mjs**：监听 `agent/created`，只对**根代理**
-  （无 `parentSession` 头）调用 `agent.ctx.tools.restrict(...)`，把
-  Orchestrator 的工具面收窄为控制平面集合。子代理不受影响——它们的工具面
-  由各自委派工具的 toolFilter 决定。
+1. **理解** — 复述目标，仅对用户拥有的选择提问
+2. **调查** — 并行委派 Explorer / Librarian / Observer
+3. **决策** — 根因/设计复杂时，先把证据交给 Oracle（技术）或 Designer（视觉）
+4. **执行** — 目标明确后委派 Fixer（携带问题、文件、根因、期望行为、约束、验收标准、验证步骤）
+5. **验证** — Fixer 完成后由 Observer 或测试确认
+6. **汇报** — 总结发现、变更、验证、不确定性、下一步
 
----
+### 2. 委派协议（envelope）
 
-## 三、权限模型
+每个 specialist 返回统一信封：
+
+```text
+STATUS: SUCCESS | PARTIAL | BLOCKED | NOT_APPLICABLE
+SUMMARY:
+FINDINGS:
+EVIDENCE:
+UNCERTAINTIES:
+RECOMMENDED_NEXT_STEP:
+```
+
+- **Fixer** 追加 `CHANGES:` / `VERIFICATION:`
+- **Observer** 追加 `OBSERVED:` / `EXPECTED:` / `DIFFERENCE:`
+- **Designer** 输出可交给 Fixer 的 `SPECIFICATION:`（组件、当前问题、期望
+  行为、布局、间距、排版、响应式规则、交互、无障碍、验收标准）
+- 信息不足返回 `UNKNOWN`/`BLOCKED`，禁止编造；Fixer 发现根因与输入不符时
+  停止扩大修改并返回 `BLOCKED / NEED REASONING`
+
+### 3. 权限矩阵
 
 每个代理的工具面（allow 列表；未列出的一律不可见）：
 
 | Agent | Read | Search | Web | Shell | Edit | Jobs | Ask user |
 |-------|------|--------|-----|-------|------|------|----------|
 | Orchestrator | read, read_image | grep, glob | web_search | — | — | — | ask_user_question |
-| Explorer | read, read_image | grep, glob | — | bash/pwsh* | — | — | — |
+| Explorer | read, read_image | grep, glob | — | bash/pwsh\* | — | — | — |
 | Librarian | — | — | web_search | — | — | — | — |
-| Observer | read, read_image | grep, glob | web_search | bash/pwsh | — | job_* | — |
+| Observer | read, read_image | grep, glob | web_search | bash/pwsh | — | job_\* | — |
 | Oracle | read, read_image | grep, glob | web_search | — | — | — | — |
 | Designer | read, read_image | grep, glob | web_search | bash/pwsh | — | — | — |
-| Fixer | read, read_image | grep, glob | web_search | bash/pwsh | write, edit | job_* | — |
+| Fixer | read, read_image | grep, glob | web_search | bash/pwsh | **write, edit** | job_\* | — |
 
-\* Explorer 的 shell 是“只读纪律”：DSH 无法在权限层表达只读 shell，
-因此其 prompt 硬性限制为非变更命令；可变更工具（write/edit）在权限层被移除。
+\* Explorer 的 shell 是“只读纪律”：DSH 无法在权限层表达只读 shell，其
+prompt 硬性限制为非变更命令；可变更工具（write/edit）在权限层被移除。
 
-实现要点：
+要点：
 
-- `bash` 只在非 Windows 注册，`pwsh` 只在 Windows 注册。生成器对含 shell 的
-  过滤器输出 `!!js process.platform === 'win32' ? [...] : [...]` 表达式，
-  由 loader 在入口激活时求值，避免 `tools.restrict()` 对未注册工具名抛错。
-- 只有 **Fixer** 拥有 write/edit；只有 **Orchestrator** 拥有
-  `subagent_*` 委派工具与 `ask_user_question`。
-- Orchestrator 自身被边界行限制为控制平面集合：
-  `read, read_image, grep, glob, ask_user_question, todo_write, web_search,
-  list_agents, subagent_*`——它不能写文件、不能跑 shell、不能直接执行。
+- 只有 **Fixer** 拥有 write/edit；只有 **Orchestrator** 拥有 `subagent_*`
+  委派工具与 `ask_user_question`
+- 所有过滤器均为 **allow 白名单**（deny-by-default）
+- `bash` 仅在非 Windows 注册、`pwsh` 仅在 Windows 注册；含 shell 的过滤器
+  生成 `!!js process.platform === 'win32' ? [...] : [...]` 表达式，由 loader
+  激活时求值，避免 `tools.restrict()` 对未注册工具名抛错
+- Orchestrator 自身被边界行（`orchestration.mjs`）限制为控制平面集合，
+  不能写文件、不能跑 shell、不能直接执行
 
----
-
-## 四、路由策略（§17）
+### 4. 路由策略
 
 Orchestrator 的 prompt 内嵌路由表（由 `src/routing/policy.js` 渲染，
 测试与提示词共享同一来源）：
@@ -127,84 +196,13 @@ Orchestrator 的 prompt 内嵌路由表（由 `src/routing/policy.js` 渲染，
 | Designer | UI / UX / layout / interaction / accessibility / visual consistency |
 | Fixer | 仅当修改目标/根因/验收标准明确时 |
 
-核心纪律：**facts before decisions, decisions before actions, actions before
-verification, verification before completion**。Fixer 只有在目标明确时才被
-路由（`route()` 对模糊 bug 报告会回退到调查代理）；信息代理之间出现冲突时，
-冲突证据交给 Oracle 而非自行裁决。
+核心纪律：模糊的 bug 报告先调查后修复（`route()` 对无明确目标的任务回退
+到调查代理）；信息代理之间冲突时，证据交给 Oracle 而非自行裁决。
 
----
+### 5. 为不同 Agent 配置不同 provider / model
 
-## 五、代理返回协议（§24）
-
-每个 specialist 返回统一 envelope：
-
-```text
-STATUS: SUCCESS | PARTIAL | BLOCKED | NOT_APPLICABLE
-SUMMARY:
-FINDINGS:
-EVIDENCE:
-UNCERTAINTIES:
-RECOMMENDED_NEXT_STEP:
-```
-
-- Fixer 追加 `CHANGES:` / `VERIFICATION:`。
-- Observer 追加 `OBSERVED:` / `EXPECTED:` / `DIFFERENCE:`。
-- Designer 输出可交给 Fixer 的 `SPECIFICATION:`（组件、问题、期望行为、
-  布局、间距、排版、响应式规则、交互、无障碍、验收标准）。
-- 信息不足时返回 `UNKNOWN`/`BLOCKED`，禁止编造；Fixer 发现根因与输入不符时
-  停止扩大修改并返回 `BLOCKED / NEED REASONING`。
-
----
-
-## 六、项目结构
-
-```
-src/
-├── agents/catalog.js                 # 六个 specialist 的定义（工具名、persona、过滤器）
-├── config/                           # schema 校验、默认值、组合 loader
-├── orchestration/orchestration.mjs   # 边界行（根代理工具收窄；零依赖）
-├── permissions/agent-permissions.js  # 每代理权限矩阵（唯一事实来源）
-└── routing/
-    ├── policy.js                     # 路由规则 + scoreTask/route + 路由表渲染
-    └── handoff.js                    # 委派 prompt 与 envelope 模板
-prompts/                              # 七个代理的系统提示词（Orchestrator + 6 specialists）
-scripts/
-├── build.mjs                         # 生成 preset/orchestrator/
-├── install.mjs                       # 安装到 $DSH_HOME/.agent-presets/
-├── validate.mjs                      # 真实 loader 方言解析 + 行名解析 + 过滤器校验
-└── smoke-mount.mjs                   # 真实 boot + mount 集成测试
-tests/                                # node:test 测试套件
-```
-
-## 七、测试
-
-```powershell
-node --test tests/
-```
-
-- `routing.test.mjs` — 路由策略（§17、§13）映射正确；模糊任务不直接路由 Fixer。
-- `permissions.test.mjs` — 权限矩阵（§19、§26 Test 6–11）：Explorer 不能写、
-  Librarian 仅 web、Observer 不能改、Fixer 可写且唯一、Orchestrator 有委派
-  工具但无变更工具、任何 specialist 都看不到 `subagent_*`。
-- `delegation.test.mjs` — 六个委派工具 spawn 语义、maxDepth 1、边界行只收窄
-  根代理（用假 ctx 驱动 `agent/created`）。
-- `harness-compat.test.mjs` — 不携带 host patch 层、不改宿主行、无 provider/MCP
-  行、组合可确定性地重建。
-- `mount.test.mjs` — **真实集成测试**：用 harness 自己的 base bundle 启动
-  Cordis、挂载 agent-presets、以真实 loader 装载本 preset 并创建 agent，
-  断言组合激活、边界生效、过滤器名全部通过 `restrict()` 校验。
-  （需要 DSH checkout，缺失时自动跳过。）
-
-## 八、为不同 Agent 配置不同的 provider / model
-
-支持。每个 specialist 都是一个独立的 `dsh-tool-subagent` 实例，宿主会在生成
-子代理时应用该实例的 `agentOptions`（provider/model/maxTokens），覆盖
-Orchestrator 自身的路由（见 `dsh-subagent` 的 `resolveChildAgentOptions`）。
-
-### 配置方式
-
-把 `model-routing.json.example` 复制为 `model-routing.json` 并修改，然后重新
-构建安装：
+把 `model-routing.json.example` 复制为 `model-routing.json` 并修改，然后
+重新构建安装：
 
 ```powershell
 Copy-Item model-routing.json.example model-routing.json
@@ -227,75 +225,101 @@ node scripts/install.mjs --force
 要点：
 
 - `model-routing.json` 已在 `.gitignore` 中（可包含密钥相关配置）；示例文件
-  `model-routing.json.example` 随仓库分发。
+  `model-routing.json.example` 随仓库分发
 - **provider 必须已在宿主中注册**（如 `deepseek-official`，或通过
   Settings → Models 配置的 pi-ai 等适配器），model 必须是该 provider 提供的
-  模型名。未配置的 specialist 保持继承 Orchestrator 的路由。
+  模型名。未配置的 specialist 保持继承 Orchestrator 的路由
 - 三个字段（provider / model / maxTokens）**全部必填**——这是
-  `dsh-tool-subagent` 的 schema 要求，缺失会构建失败。
+  `dsh-tool-subagent` 的 schema 要求，缺失会构建失败
 - `maxTokens` 是该 specialist 单次输出的上限；`oracle` 这类深度推理角色建议
-  给更大预算，`librarian` 这类短查询角色可以收紧。
+  给更大预算，`librarian` 这类短查询角色可以收紧
 - 构建脚本在 `model-routing.json` 存在时把 `agentOptions` 写入每个委派行；
-  不存在时生成的组合不包含 `agentOptions`（全部继承），默认行为不变。
+  不存在时生成的组合不包含 `agentOptions`（全部继承），默认行为不变
 
-> 除模型路由外，每个 specialist 的工具面（权限）也可以独立调整——见
-> `src/permissions/agent-permissions.js`，改完重新构建即可。
+### 6. 自定义提示词与权限
 
-## 九、作为开源插件分享
+- **提示词**：编辑 `prompts/*.md`（七个代理各一个），然后
+  `node scripts/build.mjs && node scripts/install.mjs --force`
+- **权限**：编辑 `src/permissions/agent-permissions.js`（每个代理的 allow
+  列表），然后重新构建安装
+- **路由规则**：编辑 `src/routing/policy.js`（`ROUTING_RULES` 数组），
+  路由表会自动渲染进 Orchestrator 的 prompt
+- **Agent 目录**：编辑 `src/agents/catalog.js`（工具名、persona 文件、
+  委派参数）
 
-可以。本插件是一个**纯增量的 DSH agent preset**，不修改宿主任何文件，
-非常适合以开源仓库 + npm 包两种形式分发。
+### 7. 项目结构
 
-### 仓库形式（推荐）
-
-```bash
-git init
-git add .
-git commit -m "dsh-multi-agent-orchestrator: multi-agent orchestration mode"
-git remote add origin https://github.com/<you>/dsh-multi-agent-orchestrator.git
-git push -u origin main
+```
+preset/orchestrator/          # 生成的可安装 preset（可直接复制使用）
+├── agent.cordis.yml          # 组合文件：Orchestrator persona + 六个委派工具 + 边界行
+├── preset.yml                # 显示元数据（选择器中的名称/描述）
+└── orchestration.mjs         # 边界行：agent/created 时收紧根代理的工具面
+prompts/                      # 七个代理的系统提示词（Orchestrator + 6 specialists）
+src/
+├── agents/catalog.js         # 六个 specialist 的定义（工具名、persona、过滤器）
+├── config/                   # schema 校验、默认值、模型路由、组合 loader
+├── orchestration/orchestration.mjs  # 边界行（根代理工具收窄；零依赖）
+├── permissions/agent-permissions.js # 每代理权限矩阵（唯一事实来源）
+└── routing/                  # 路由规则 + scoreTask/route + envelope 模板
+scripts/                      # build / install / validate / smoke-mount
+tests/                        # 45 项测试（node:test）
+.github/workflows/ci.yml      # GitHub Actions：build + validate + test
 ```
 
-使用者克隆后：
+### 8. 架构说明
 
-```bash
-npm install           # 无运行时依赖，仅开发工具
-npm run build         # 生成 preset/orchestrator/
-npm test              # 测试（需要时可跳过）
-node scripts/install.mjs   # 安装到 ~/.dsh/.agent-presets/orchestrator
+- **模式 = DSH agent preset**：DSH 原生机制，会话代理的工具、提示词、能力
+  由 preset 组合文件决定；Web UI 有原生选择器
+- **specialist = 委派工具实例**：每个 specialist 是 `@deepseek-ai/dsh-tool-subagent`
+  的一个实例，自带专属 persona、toolFilter、maxDepth；子代理通过宿主
+  `ctx.subagents` 生成，上下文完全隔离（spawn，不继承父对话）
+- **maxDepth: 1**：Orchestrator（深度 0）可生成 specialist（深度 1）；
+  specialist 再试图生成任何代理会被宿主拒绝（深度 2 > 1）——加上过滤器
+  不暴露 `subagent_*` 工具，双重机械保证
+- **边界行 orchestration.mjs**：监听 `agent/created`，只对根代理调用
+  `agent.ctx.tools.restrict(...)`，把 Orchestrator 收窄为控制平面
+- **零侵入**：不修改宿主行、不覆盖 provider/MCP、不动 shipped 预设、
+  不写 profile patch 层
+
+### 9. 测试
+
+```powershell
+node --test tests/
 ```
 
-仓库已包含：`LICENSE`（MIT）、`.gitignore`、`.github/workflows/ci.yml`
-（GitHub Actions：build + validate + test）、`model-routing.json.example`。
+| 测试文件 | 覆盖 |
+|---|---|
+| `routing.test.mjs` | 路由策略：模糊任务不直接路由 Fixer |
+| `permissions.test.mjs` | 权限矩阵：Explorer 不能写、Librarian 仅 web、Fixer 可写且唯一、任何 specialist 看不到 `subagent_*` |
+| `delegation.test.mjs` | 六个委派工具 spawn 语义、maxDepth 1、边界行只收窄根代理 |
+| `model-routing.test.mjs` | 每 Agent 模型路由配置的加载与校验 |
+| `harness-compat.test.mjs` | 无 host patch 层、不改宿主行、无 provider/MCP 行、确定性构建 |
+| `mount.test.mjs` | **真实集成**：启动 harness、挂载 preset、断言组合激活与边界生效 |
 
-### npm 包形式（可选）
+---
 
-`package.json` 已配置好 `files` 与 `prepublishOnly`（发布前自动构建+校验）。
-把 `repository`/`bugs`/`homepage` 字段改成你的地址后：
-
-```bash
-npm publish
-```
-
-使用者通过 npm 获取源码包后，用同样的方式安装 preset 目录：
-
-```bash
-npx dsh-multi-agent-orchestrator    # 或 npm pack 后解压
-node scripts/install.mjs
-```
-
-> 说明：本插件不需要在 profile 里 `dsh plugin add`——它不是一个 host 插件
-> 包，而是一个 agent preset。安装 = 把 `preset/orchestrator/` 放进
-> `$DSH_HOME/.agent-presets/`。这样对宿主的侵入为零，卸载也只是一个目录。
-
-## 十、常见问题
+## 常见问题
 
 - **选择器里看不到该模式？** 确认 `$DSH_HOME/.agent-presets/orchestrator/`
-  存在且包含 `agent.cordis.yml`；Web 端选择器实时读盘，无需重启。
+  存在且包含 `agent.cordis.yml`；Web 端选择器实时读盘，无需重启
 - **改了 prompts 没生效？** prompts 在构建时内联进 `agent.cordis.yml`，
-  改完运行 `node scripts/build.mjs && node scripts/install.mjs --force`。
+  改完运行 `node scripts/build.mjs && node scripts/install.mjs --force`
 - **想要后台委派 / fork？** 当前六个委派工具为前台 one-shot（并行通过一条
   消息内多个工具调用实现）。如需要，可在组合中追加 `backgroundMode: continuable`
-  的实例并配 `send_message` 工具。
+  的实例并配 `send_message` 工具
 - **web_fetch 未启用？** 与宿主默认一致（SSRF 防护）；需要时在组合的
-  `tool-web` 行打开 `fetch: true` 并挂载相应 fetch provider。
+  `tool-web` 行打开 `fetch: true` 并挂载相应 fetch provider
+- **如何贡献？** 欢迎 PR：新 specialist、路由规则、权限调整、测试
+
+---
+
+## 许可证
+
+[MIT](LICENSE)
+
+## 致谢
+
+- [oh-my-opencode-slim](https://github.com/alvinunreal/oh-my-opencode-slim) —
+  本项目的角色体系与工作流设计的灵感来源
+- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) —
+  提供全部底层能力的宿主平台

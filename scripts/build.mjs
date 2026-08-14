@@ -98,9 +98,9 @@ function renderDelegationRow(specialist, persona, modelRoute) {
  * Compose the full agent.cordis.yml text.
  * @returns {string} the composition YAML.
  */
-export function renderComposition() {
+export function renderComposition(root = ROOT) {
 	const orchestratorPersona = loadOrchestratorPersona(ROOT);
-	const modelRoutes = loadModelRouting(ROOT);
+	const modelRoutes = loadModelRouting(root);
 	const rows = [];
 	rows.push("# The `orchestrator` agent preset: multi-agent orchestration mode.");
 	rows.push("#");

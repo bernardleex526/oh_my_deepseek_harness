@@ -421,6 +421,10 @@
 
     toolFilter:
       allow: !!js "process.platform === 'win32' ? [\"read\",\"read_image\",\"grep\",\"glob\",\"pwsh\"] : [\"read\",\"read_image\",\"grep\",\"glob\",\"bash\"]"
+    agentOptions:
+      provider: opencode-go
+      model: deepseek-v4-flash
+      maxTokens: 32768
 
 - id: tool-subagent-librarian
   name: '@deepseek-ai/dsh-tool-subagent'
@@ -542,6 +546,10 @@
 
     toolFilter:
       allow: ["web_search"]
+    agentOptions:
+      provider: opencode-go
+      model: deepseek-v4-flash
+      maxTokens: 32768
 
 - id: tool-subagent-observer
   name: '@deepseek-ai/dsh-tool-subagent'
@@ -669,6 +677,10 @@
 
     toolFilter:
       allow: !!js "process.platform === 'win32' ? [\"read\",\"read_image\",\"grep\",\"glob\",\"pwsh\",\"web_search\",\"job_list\",\"job_output\",\"job_kill\"] : [\"read\",\"read_image\",\"grep\",\"glob\",\"bash\",\"web_search\",\"job_list\",\"job_output\",\"job_kill\"]"
+    agentOptions:
+      provider: opencode-go
+      model: mimo-v2.5
+      maxTokens: 32768
 
 - id: tool-subagent-oracle
   name: '@deepseek-ai/dsh-tool-subagent'
@@ -798,6 +810,10 @@
 
     toolFilter:
       allow: ["read","read_image","grep","glob","web_search"]
+    agentOptions:
+      provider: qlqq
+      model: gpt-5.6-sol
+      maxTokens: 32768
 
 - id: tool-subagent-designer
   name: '@deepseek-ai/dsh-tool-subagent'
@@ -925,6 +941,10 @@
 
     toolFilter:
       allow: !!js "process.platform === 'win32' ? [\"read\",\"read_image\",\"grep\",\"glob\",\"pwsh\",\"web_search\"] : [\"read\",\"read_image\",\"grep\",\"glob\",\"bash\",\"web_search\"]"
+    agentOptions:
+      provider: qlqq
+      model: gpt-5.6-sol
+      maxTokens: 32768
 
 - id: tool-subagent-fixer
   name: '@deepseek-ai/dsh-tool-subagent'
@@ -1082,6 +1102,10 @@
 
     toolFilter:
       allow: !!js "process.platform === 'win32' ? [\"read\",\"read_image\",\"write\",\"edit\",\"grep\",\"glob\",\"pwsh\",\"web_search\",\"todo_write\",\"job_list\",\"job_output\",\"job_kill\"] : [\"read\",\"read_image\",\"write\",\"edit\",\"grep\",\"glob\",\"bash\",\"web_search\",\"todo_write\",\"job_list\",\"job_output\",\"job_kill\"]"
+    agentOptions:
+      provider: opencode-go
+      model: deepseek-v4-flash
+      maxTokens: 32768
 
 # ── control-plane boundary ──────────────────────────────────────────
 

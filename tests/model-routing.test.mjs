@@ -71,12 +71,26 @@ test("incomplete agentOptions fail loudly (all three fields required)", () => {
 	}
 });
 
-test("composition renders agentOptions when routes exist", async () => {
-	// renderComposition reads model-routing.json from the project root; the
-	// committed repo has none, so the generated rows carry no agentOptions.
-	const composition = renderComposition();
-	assert.ok(!composition.includes("agentOptions:"), "default build must not emit agentOptions");
-	assert.ok(!composition.includes("maxTokens:"), "default build must not emit maxTokens");
+test("composition renders agentOptions only when routes exist", async () => {
+	const clean = tempRoot(void 0);
+	try {
+		const composition = renderComposition(clean);
+		assert.ok(!composition.includes("agentOptions:"), "default build must not emit agentOptions");
+		assert.ok(!composition.includes("maxTokens:"), "default build must not emit maxTokens");
+	} finally {
+		rmSync(clean, { recursive: true, force: true });
+	}
+	const routed = tempRoot({
+		explorer: { provider: "opencode-go", model: "deepseek-v4-flash", maxTokens: 32768 }
+	});
+	try {
+		const composition = renderComposition(routed);
+		assert.ok(composition.includes("agentOptions:"), "routed build must emit agentOptions");
+		assert.ok(composition.includes("model: deepseek-v4-flash"), "routed build must carry the route model");
+		assert.ok(composition.includes("maxTokens: 32768"), "routed build must carry maxTokens");
+	} finally {
+		rmSync(routed, { recursive: true, force: true });
+	}
 });
 
 test("model route rows pass the real harness schema", async () => {
