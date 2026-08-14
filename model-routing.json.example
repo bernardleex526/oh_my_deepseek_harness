@@ -1,0 +1,32 @@
+{
+  "explorer": {
+    "provider": "deepseek-official",
+    "model": "deepseek-v4-flash",
+    "maxTokens": 8000
+  },
+  "librarian": {
+    "provider": "deepseek-official",
+    "model": "deepseek-v4-flash",
+    "maxTokens": 4000
+  },
+  "observer": {
+    "provider": "deepseek-official",
+    "model": "deepseek-v4-flash",
+    "maxTokens": 8000
+  },
+  "oracle": {
+    "provider": "deepseek-official",
+    "model": "deepseek-v4-flash",
+    "maxTokens": 16000
+  },
+  "designer": {
+    "provider": "deepseek-official",
+    "model": "deepseek-v4-flash",
+    "maxTokens": 8000
+  },
+  "fixer": {
+    "provider": "deepseek-official",
+    "model": "deepseek-v4-flash",
+    "maxTokens": 12000
+  }
+}

@@ -1,0 +1,11 @@
+# Normalize line endings for cross-platform collaboration.
+* text=auto eol=lf
+
+# Source and config files are line-ending sensitive.
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.sh text eol=lf

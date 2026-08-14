@@ -1,0 +1,3 @@
+name: 多智能体编排
+description: Orchestrator 控制平面 + Explorer / Librarian / Observer / Oracle / Designer / Fixer 六个职责隔离的专职子代理，调查→决策→执行→验证。
+order: 5

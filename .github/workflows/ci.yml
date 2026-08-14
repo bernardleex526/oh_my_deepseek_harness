@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install devDependencies
+        run: npm install --no-audit --no-fund
+
+      # Build the preset from src/ + prompts/ and validate the generated
+      # agent.cordis.yml with the loader dialect.
+      - name: Build preset
+        run: node scripts/build.mjs
+
+      - name: Validate composition
+        run: node scripts/validate.mjs
+
+      - name: Run test suite
+        run: node --test tests/

@@ -1,0 +1,16 @@
+# Node
+node_modules/
+
+# Local model routing (secret-bearing) — copy from model-routing.json.example
+model-routing.json
+
+# DSH harness home when pointed at this repo
+.dsh/
+
+# Temp artifacts from the smoke test
+dsh-smoke-*/
+
+# Editor/OS
+.DS_Store
+Thumbs.db
+*.log
