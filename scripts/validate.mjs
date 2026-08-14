@@ -8,20 +8,27 @@
  *  2. Every row is a named plugin row.
  *  3. Every package name resolves from the harness installation
  *     (`@deepseek-ai/*` packages under the DSH checkout) or is a `cordis:`
- *     builtin or a relative path inside the preset dir.
+ *     builtin or a relative path inside the preset dir. Package metadata and
+ *     every `@deepseek-ai/*` row's exported Cordis plugin are DEEP-checked.
  *  4. Every `toolFilter` name is a tool this preset actually registers
  *     (cross-checked against the row names + known tool packages).
  *  5. The preset metadata parses.
  *
+ * This script FAILS (non-zero exit) when the DSH checkout is unavailable:
+ * the deep package checks are essential, not optional. Run `npm install`
+ * (installs @deepseek-ai/* as devDependencies under node_modules/@deepseek-ai)
+ * and/or point DSH_CHECKOUT at an installed harness.
+ *
  * Run: node scripts/validate.mjs [path-to-dsh-checkout]
- * The checkout path defaults to the npx cache location of this environment;
- * pass it explicitly when the harness lives elsewhere.
+ * The checkout path defaults to `node_modules/@deepseek-ai` next to the repo
+ * root (i.e. the devDependency install); override it via the DSH_CHECKOUT
+ * environment variable or a positional argument.
  *
  * @module multi-agent-orchestrator/scripts/validate
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { SPECIALISTS } from "../src/agents/catalog.js";
@@ -33,8 +40,12 @@ const PRESET_DIR = join(ROOT, "preset", PRESET_ID);
 const COMPOSITION = join(PRESET_DIR, "agent.cordis.yml");
 const METADATA = join(PRESET_DIR, "preset.yml");
 
-/** Default harness checkout: the npx-cached DSH install of this environment. */
-const DEFAULT_CHECKOUT = "C:\\Users\\admin\\AppData\\Local\\npm-cache\\_npx\\1e7f6d9597241db0\\node_modules\\@deepseek-ai";
+/**
+ * Default harness checkout: `node_modules/@deepseek-ai` in the repo root,
+ * i.e. the location the devDependency install places the packages. Resolved
+ * cross-platform via node:path so it works on both CI runners.
+ */
+const DEFAULT_CHECKOUT = join(resolve(ROOT), "node_modules", "@deepseek-ai");
 const CHECKOUT = process.argv[2] ?? process.env.DSH_CHECKOUT ?? DEFAULT_CHECKOUT;
 const CHECKOUT_AVAILABLE = existsSync(join(CHECKOUT, "dsh-base"));
 
@@ -158,7 +169,12 @@ export async function validate() {
 			continue;
 		}
 		if (name.startsWith("@deepseek-ai/")) {
-			if (!CHECKOUT_AVAILABLE) continue; // structural pass in CI
+			if (!CHECKOUT_AVAILABLE) {
+				// The deep package checks are essential, not optional: fail
+				// loudly so CI cannot silently ship an unvalidated preset.
+				check(false, `DSH checkout unavailable at "${CHECKOUT}" — run \`npm install\` (installs @deepseek-ai/* under node_modules/@deepseek-ai) or set DSH_CHECKOUT` );
+				continue;
+			}
 			const packageName = name.slice("@deepseek-ai/".length).split("/")[0];
 			const dir = join(CHECKOUT, packageName);
 			check(existsSync(dir), `row "${id}": package "${name}" not found in checkout`);
@@ -267,10 +283,7 @@ export async function validate() {
 		for (const error of errors) console.error(`  ✗ ${error}`);
 		return 1;
 	}
-	const deepNote = CHECKOUT_AVAILABLE
-		? `${packageChecks} packages verified`
-		: "deep package checks skipped (no DSH checkout)";
-	console.log(`validate: OK — ${rowNames.size} rows, ${SPECIALISTS.length} specialists, all filters reference registered tools; ${deepNote}`);
+	console.log(`validate: OK — ${rowNames.size} rows, ${SPECIALISTS.length} specialists, all filters reference registered tools, ${packageChecks} packages deep-checked`);
 	return 0;
 }
 

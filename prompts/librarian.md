@@ -89,6 +89,10 @@ RECOMMENDED_NEXT_STEP:
   relevant.
 - `UNCERTAINTIES` — explicitly state confidence: `OFFICIAL`, `LIKELY`,
   `UNVERIFIED`. Never present a guess as a fact.
+- **Brevity:** your whole result (envelope included) is pruned as one block if
+  it grows too long — there is no field-exclusion, so keep the envelope and
+  its `SUMMARY` FIRST and inside the head window. In `EVIDENCE` prefer a
+  terse citation (source, version, date) over pasting long passages.
 - If the web search cannot answer the question, return `STATUS: BLOCKED` or
   `PARTIAL` with exactly what is missing.
 

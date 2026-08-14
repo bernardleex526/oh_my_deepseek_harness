@@ -95,12 +95,31 @@ function renderDelegationRow(specialist, persona, modelRoute) {
 }
 
 /**
+ * Determine the build mode from argv / env.
+ *   `--local` on argv OR `BUILD_MODE=local` -> local build (reads model-routing.json)
+ *   otherwise                               -> dist build (ships a clean preset; never
+ *                                              reads model-routing.json, even if present
+ *                                              locally)
+ * @returns {"dist" | "local"}
+ */
+export function buildMode() {
+	if (process.argv.includes("--local")) return "local";
+	if (process.env.BUILD_MODE === "local") return "local";
+	return "dist";
+}
+
+/**
  * Compose the full agent.cordis.yml text.
+ * @param {string} [root] - project root directory.
+ * @param {{readRoutes?: boolean}} [options] - if `readRoutes` is true the
+ *   composition calls `loadModelRouting(root)` (local mode); defaults to
+ *   false so the default composition is the dist build (never emits
+ *   agentOptions lines, even if model-routing.json is present locally).
  * @returns {string} the composition YAML.
  */
-export function renderComposition(root = ROOT) {
+export function renderComposition(root = ROOT, { readRoutes = false } = {}) {
 	const orchestratorPersona = loadOrchestratorPersona(ROOT);
-	const modelRoutes = loadModelRouting(root);
+	const modelRoutes = readRoutes ? loadModelRouting(root) : {};
 	const rows = [];
 	rows.push("# The `orchestrator` agent preset: multi-agent orchestration mode.");
 	rows.push("#");
@@ -203,9 +222,21 @@ export function renderComposition(root = ROOT) {
 	rows.push("    - id: tool-result-pruner");
 	rows.push("      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'");
 	rows.push("      config:");
-	rows.push("        thresholdChars: 8192");
-	rows.push("        headChars: 4096");
-	rows.push("        tailChars: 1024");
+	rows.push("        thresholdChars: 20000");
+	rows.push("        headChars: 12000");
+	rows.push("        tailChars: 3000");
+	rows.push("");
+	rows.push("# Budget rationale for the pruner values above:");
+	rows.push("#   - A specialist's ENTIRE tool result (envelope + body) is pruned as one");
+	rows.push("#     block when it exceeds thresholdChars, keeping the first headChars plus");
+	rows.push("#     a fixed PRUNE_MARKER plus the last tailChars. 12000 + marker + 3000 fits");
+	rows.push("#     20000, so the key evidence and the envelope's head stay intact.");
+	rows.push("#   - DSH's pruner has NO field/exclusion mechanism (verified in");
+	rows.push("#     dsh-compaction-tool-result-pruner lib/index.js:14-18, 42-43, 78-123): it");
+	rows.push("#     cannot keep 'the envelope' and prune 'the body' separately. The envelope");
+	rows.push("#     is therefore pruned WITH the whole result, which is why every specialist");
+	rows.push("#     prompt instructs: keep SUMmary + envelope short and inside the head window,");
+	rows.push("#     and prefer precise references over long pasted content.");
 	rows.push("");
 	return rows.join("\n");
 }
@@ -225,9 +256,10 @@ export function renderPresetMetadata() {
 
 /**
  * Validate and write the generated preset directory.
- * @returns {string[]} paths written.
+ * @returns {{written: string[], mode: "dist" | "local"}} paths written.
  */
 export function build() {
+	const mode = buildMode();
 	for (const specialist of SPECIALISTS) {
 		assertAgentDefinition(specialist, `specialist:${specialist.id}`);
 	}
@@ -235,15 +267,16 @@ export function build() {
 	const compositionPath = join(PRESET_DIR, "agent.cordis.yml");
 	const metadataPath = join(PRESET_DIR, "preset.yml");
 	const rowPath = join(PRESET_DIR, "orchestration.mjs");
-	writeFileSync(compositionPath, renderComposition(), "utf8");
+	// Dist builds never read model-routing.json; local builds do.
+	writeFileSync(compositionPath, renderComposition(ROOT, { readRoutes: mode === "local" }), "utf8");
 	writeFileSync(metadataPath, renderPresetMetadata() + "\n", "utf8");
 	copyFileSync(join(ROOT, "src", "orchestration", "orchestration.mjs"), rowPath);
-	return [compositionPath, metadataPath, rowPath];
+	return { written: [compositionPath, metadataPath, rowPath], mode };
 }
 
 // Allow both `import { build }` (tests) and `node scripts/build.mjs`.
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-	const written = build();
-	console.log(`built ${PRESET_ID} preset:`);
+	const { written, mode } = build();
+	console.log(`built ${PRESET_ID} preset in ${mode.toUpperCase()} mode:`);
 	for (const path of written) console.log(`  ${path}`);
 }

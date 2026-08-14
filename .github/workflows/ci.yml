@@ -7,7 +7,16 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # The deep-check scripts (validate/smoke/tests) resolve the DSH checkout
+      # from $DSH_CHECKOUT. Point it at the devDependency install under
+      # node_modules/@deepseek-ai so they can deep-check the real packages.
+      DSH_CHECKOUT: ${{ github.workspace }}/node_modules/@deepseek-ai
     steps:
       - uses: actions/checkout@v4
 
@@ -17,15 +26,25 @@ jobs:
           cache: npm
 
       - name: Install devDependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci
 
-      # Build the preset from src/ + prompts/ and validate the generated
-      # agent.cordis.yml with the loader dialect.
+      # Build the preset from src/ + prompts/ in dist mode (never reads the
+      # gitignored model-routing.json).
       - name: Build preset
-        run: node scripts/build.mjs
+        run: npm run build
 
-      - name: Validate composition
-        run: node scripts/validate.mjs
+      # Reproducibility gate: the committed preset must be byte-identical to a
+      # fresh dist build. Use core.autocrlf=false so the LF/CRLF working-tree
+      # checkout on Windows cannot cause a spurious diff.
+      - name: Verify preset is reproducible
+        shell: bash
+        run: git -c core.autocrlf=false diff --exit-code -- preset/
+
+      - name: Validate composition (deep package checks)
+        run: npm run validate
+
+      - name: Smoke-mount the preset in the real harness
+        run: npm run smoke
 
       - name: Run test suite
-        run: node --test tests/
+        run: npm test

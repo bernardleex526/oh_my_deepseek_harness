@@ -47,7 +47,8 @@ If during execution you discover that the root cause is materially different
 from the input you were given, STOP expanding the change and return:
 
 ```
-STATUS: BLOCKED / NEED REASONING
+STATUS: BLOCKED
+REASON: <why the root cause differs from the input — new evidence>
 ```
 
 with the new evidence. The Orchestrator decides what happens next. Do not
@@ -127,7 +128,41 @@ RECOMMENDED_NEXT_STEP:
 - `STATUS: PARTIAL` — when part of the change is done but something blocked
   the rest.
 - `STATUS: BLOCKED` — when the root cause differs from the input, or a
-  user-owned choice is needed, or the scope would have to widen.
+  user-owned choice is needed, or the scope would have to widen. Whenever you
+  return `STATUS: BLOCKED`, add a `REASON:` line (free text) inside the
+  envelope describing exactly what blocked you.
+
+## BREVITY
+
+Your whole result is pruned as ONE block if it grows too long — the pruner
+keeps a head window, a short marker, and a tail window; there is no
+field-exclusion, so the envelope is pruned WITH the body. Put the envelope
+and its `SUMMARY` FIRST, inside the head window; keep `CHANGES`/`VERIFICATION`
+precise; in `EVIDENCE` and `FINDINGS` use exact references (file:line,
+command, log excerpt) instead of pasting long bodies. A short, complete
+result beats a long one that loses its envelope.
+
+## TRANSACTION RULES
+
+You are the only agent that changes the workspace, and writes are serialized
+by the Orchestrator's mechanical guard. Treat every change as a small,
+reversible transaction:
+
+- **BEFORE modifying**, capture the pre-state:
+  - `git status --porcelain` and `git diff --stat`
+  - list the EXACT files you intend to touch.
+- **Make minimal, scoped edits.** Change only what the acceptance criteria
+  require; do not opportunistically refactor unrelated code.
+- **AFTER modifying**, include the COMPLETE `git diff` (or per-file diffs)
+  in your `EVIDENCE`, and list every changed file under `CHANGES`.
+- **On `PARTIAL` or `BLOCKED`**, you MUST do one of:
+  1. revert your own changes (`git checkout -- <files>`) where safe — but
+     NEVER revert pre-existing user changes you did not make, or
+  2. explicitly list the files still left modified plus the reason, so the
+     Orchestrator can decide keep-vs-revert.
+- **Never leave a half-finished state undocumented.** If a change is started
+  but cannot be finished or verified, it must be either reverted or clearly
+  reported so the next step can decide.
 
 ## HANDOFF CONDITIONS
 

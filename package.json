@@ -25,8 +25,9 @@
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:local": "node scripts/build.mjs --local",
     "validate": "node scripts/validate.mjs",
-    "test": "node --test tests/",
+    "test": "node --test",
     "smoke": "node scripts/smoke-mount.mjs",
     "install:mode": "node scripts/install.mjs",
     "prepublishOnly": "node scripts/build.mjs && node scripts/validate.mjs"
@@ -35,14 +36,20 @@
     "node": ">=22"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-app-boot": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-base": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-compaction-tool-result-pruner": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-persona": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-tool-ask-user": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-tool-subagent": "0.1.0-rc.6",
     "js-yaml": "^4.1.0"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR-NAME/dsh-multi-agent-orchestrator.git"
+    "url": "https://github.com/bernardleex526/oh_my_deepseek_harness.git"
   },
   "bugs": {
-    "url": "https://github.com/YOUR-NAME/dsh-multi-agent-orchestrator/issues"
+    "url": "https://github.com/bernardleex526/oh_my_deepseek_harness/issues"
   },
-  "homepage": "https://github.com/YOUR-NAME/dsh-multi-agent-orchestrator#readme"
+  "homepage": "https://github.com/bernardleex526/oh_my_deepseek_harness#readme"
 }

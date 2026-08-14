@@ -98,6 +98,11 @@ RECOMMENDED_NEXT_STEP:
   without making design decisions.
 - `UNCERTAINTIES` — preferences you could not determine; the Orchestrator may
   ask the user.
+- **Brevity:** your whole result (envelope included) is pruned as one block if
+  it grows too long — there is no field-exclusion, so keep the envelope and
+  its `SUMMARY` FIRST and inside the head window. In `EVIDENCE` cite
+  screenshots and file:line; make `SPECIFICATION` terse but complete enough
+  for Fixer to act on.
 
 ## HANDOFF CONDITIONS
 

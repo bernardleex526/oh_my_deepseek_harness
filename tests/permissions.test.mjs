@@ -122,21 +122,34 @@ test("role matrix matches the design doc §19 table", () => {
 	for (const id of ["explorer", "librarian", "observer"]) {
 		for (const tool of WRITERS) assert.ok(!filterForAgent(id).allow.includes(tool), `${id} writes`);
 	}
-	// decision makers never write; Designer has limited shell, Oracle none
+	// decision makers never write; Designer and Oracle have no shell
 	for (const id of ["oracle", "designer"]) {
 		for (const tool of WRITERS) assert.ok(!filterForAgent(id).allow.includes(tool), `${id} writes`);
 	}
 	assert.ok(!filterForAgent("oracle").allow.includes(shellTool()), "oracle has no shell");
-	assert.ok(filterForAgent("designer").allow.includes(shellTool()), "designer has limited shell");
-	// executor is the only writer
+	assert.ok(!filterForAgent("designer").allow.includes(shellTool()), "designer has no shell");
+	// only the executor (Fixer) has write/edit — asserted strongly in Test 9
 	assert.ok(filterForAgent("fixer").allow.includes("write"));
 });
 
-test("per-agent surfaces are pairwise distinct (no role collapse)", () => {
-	const seen = new Set();
+test("per-agent surfaces are distinct except the intended oracle/designer pair", () => {
+	// Oracle and Designer are both non-executing decision-makers with the same
+	// read-only investigative surface (read/search/web); they intentionally
+	// share it. Every other surface must be unique so no unintended role
+	// collapse slips in.
+	const surfacesByAgent = new Map();
 	for (const specialist of SPECIALISTS) {
-		const key = specialist.filterFor("posix").allow.join(",");
-		assert.ok(!seen.has(key), `${specialist.id} duplicates another role's surface`);
-		seen.add(key);
+		surfacesByAgent.set(specialist.id, specialist.filterFor("posix").allow.join(","));
 	}
+	// An agent's surface is "shared" if some OTHER agent has the identical one.
+	const shared = new Set();
+	for (const [agentId, surface] of surfacesByAgent) {
+		for (const [otherId, other] of surfacesByAgent) {
+			if (otherId !== agentId && surface === other) {
+				shared.add(agentId);
+				break;
+			}
+		}
+	}
+	assert.deepEqual(shared, new Set(["oracle", "designer"]), "only oracle+designer may share a surface");
 });

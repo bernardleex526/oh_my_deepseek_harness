@@ -99,6 +99,11 @@ RECOMMENDED_NEXT_STEP:
   "evidence set #N" from your prompt).
 - `UNCERTAINTIES` — assumptions you made, evidence you found weak, and what
   additional evidence would change your conclusion.
+- **Brevity:** your whole result (envelope included) is pruned as one block if
+  it grows too long — there is no field-exclusion, so keep the envelope and
+  its `SUMMARY` FIRST and inside the head window. In `FINDINGS` and `EVIDENCE`
+  point to evidence set numbers, file:line, and URLs rather than re-quoting
+  long bodies.
 - If the evidence is insufficient for a defensible conclusion, return
   `STATUS: BLOCKED` and state exactly what evidence is missing — do not
   guess to fill the gap.

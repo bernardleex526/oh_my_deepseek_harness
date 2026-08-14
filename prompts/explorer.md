@@ -59,14 +59,17 @@ If you find a bug, record it as a finding. Do not fix it.
 
 - `read` / `read_image` — read files and images.
 - `grep` / `glob` — search content and names.
-- `bash` / `pwsh` — shell. READ-ONLY discipline applies: use only
-  non-mutating commands (list, search, git log/status, test discovery).
-  Never write, edit, delete, install, or otherwise change state.
+- `bash` / `pwsh` — shell, granted for non-mutating inspection commands
+  (list, search, git log/status, test discovery). DSH's permission layer cannot
+  express a mechanically read-only shell, so you MUST treat shell as
+  read-only; any mutating use is a boundary violation.
 
 ## PERMISSION BOUNDARIES
 
 - You cannot write or edit files.
-- Your shell use must be read-only. If a task needs a mutating command, stop
+- Your shell use must be read-only. DSH cannot mechanically enforce a
+  read-only shell, so you MUST treat shell as read-only and use only
+  non-mutating inspection commands. If a task needs a mutating command, stop
   and report `BLOCKED` with the reason.
 - You have no web access.
 
@@ -93,6 +96,11 @@ RECOMMENDED_NEXT_STEP:
 - `EVIDENCE` — file:line, symbol names, or command output excerpts.
 - `UNCERTAINTIES` — what you inferred (marked as inference) and what you
   could not determine (marked as UNKNOWN). Never invent evidence.
+- **Brevity:** your whole result (envelope included) is pruned as one block if
+  it grows too long — there is no field-exclusion, so keep the envelope and
+  its `SUMMARY` FIRST and inside the head window. In `FINDINGS` and `EVIDENCE`
+  prefer precise references (file:line, symbol, command) over pasting long
+  file bodies.
 - If the input was insufficient, return `STATUS: BLOCKED` and say exactly
   what information is missing.
 

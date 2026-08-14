@@ -7,7 +7,9 @@
  * Orchestrator boundary is enforced by `tools.restrict()`, and every
  * specialist toolFilter passes the child-setup name validation.
  *
- * Skips cleanly when the DSH checkout is unavailable.
+ * The test FAILS (rather than skips) when the DSH checkout is unavailable:
+ * deep package checks are essential. Run `npm install` (installs @deepseek-ai/*
+ * under node_modules/@deepseek-ai) and/or set DSH_CHECKOUT.
  *
  * @module multi-agent-orchestrator/tests/mount
  */
@@ -15,15 +17,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { smokeMount } from "../scripts/smoke-mount.mjs";
 import { SUBAGENT_TOOLS } from "../src/permissions/agent-permissions.js";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const CHECKOUT = process.env.DSH_CHECKOUT ?? "C:\\Users\\admin\\AppData\\Local\\npm-cache\\_npx\\1e7f6d9597241db0\\node_modules\\@deepseek-ai";
+const DEFAULT_CHECKOUT = join(resolve(ROOT), "node_modules", "@deepseek-ai");
+const CHECKOUT = process.env.DSH_CHECKOUT ?? DEFAULT_CHECKOUT;
 
-test("real harness boot mounts the preset and enforces every boundary", { skip: !existsSync(join(CHECKOUT, "dsh-base")) }, async () => {
+test("real harness boot mounts the preset and enforces every boundary", async () => {
+	assert.ok(
+		existsSync(join(CHECKOUT, "dsh-base")),
+		`DSH checkout unavailable at "${CHECKOUT}" — run \`npm install\` (installs @deepseek-ai/* under node_modules/@deepseek-ai), or set DSH_CHECKOUT`
+	);
 	const result = await smokeMount();
 	assert.equal(result.presetBroken, void 0, "preset must pass the harness health check");
 	for (const tool of SUBAGENT_TOOLS) {

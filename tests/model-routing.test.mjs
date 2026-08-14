@@ -8,12 +8,21 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadModelRouting, MODEL_ROUTING_FILE } from "../src/config/model-routing.js";
 import { assertAgentOptions } from "../src/agents/catalog.js";
 import { renderComposition } from "../scripts/build.mjs";
+
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+/**
+ * Default harness checkout: `node_modules/@deepseek-ai` in the repo root, i.e.
+ * the location the devDependency install places the packages.
+ */
+const DEFAULT_CHECKOUT = join(resolve(ROOT), "node_modules", "@deepseek-ai");
+const CHECKOUT = process.env.DSH_CHECKOUT ?? DEFAULT_CHECKOUT;
 
 /** Create a temp project root with an optional model-routing.json. */
 function tempRoot(routing) {
@@ -84,7 +93,7 @@ test("composition renders agentOptions only when routes exist", async () => {
 		explorer: { provider: "opencode-go", model: "deepseek-v4-flash", maxTokens: 32768 }
 	});
 	try {
-		const composition = renderComposition(routed);
+		const composition = renderComposition(routed, { readRoutes: true });
 		assert.ok(composition.includes("agentOptions:"), "routed build must emit agentOptions");
 		assert.ok(composition.includes("model: deepseek-v4-flash"), "routed build must carry the route model");
 		assert.ok(composition.includes("maxTokens: 32768"), "routed build must carry maxTokens");
@@ -97,10 +106,11 @@ test("model route rows pass the real harness schema", async () => {
 	const { createRequire } = await import("node:module");
 	const { pathToFileURL } = await import("node:url");
 	const require = createRequire(import.meta.url);
-	const checkout = process.env.DSH_CHECKOUT ?? "C:\\Users\\admin\\AppData\\Local\\npm-cache\\_npx\\1e7f6d9597241db0\\node_modules\\@deepseek-ai";
-	const { existsSync } = await import("node:fs");
-	if (!existsSync(join(checkout, "dsh-tool-subagent"))) return; // skip without checkout
-	const toolSubagent = await import(pathToFileURL(join(checkout, "dsh-tool-subagent", "lib", "index.js")).href);
+	assert.ok(
+		existsSync(join(CHECKOUT, "dsh-tool-subagent")),
+		`DSH checkout unavailable at "${CHECKOUT}" — run \`npm install\` (installs @deepseek-ai/* under node_modules/@deepseek-ai), or set DSH_CHECKOUT`
+	);
+	const toolSubagent = await import(pathToFileURL(join(CHECKOUT, "dsh-tool-subagent", "lib", "index.js")).href);
 	const sample = {
 		toolName: "subagent_oracle",
 		provider: "spawn",

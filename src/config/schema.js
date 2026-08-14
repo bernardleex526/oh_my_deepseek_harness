@@ -84,6 +84,30 @@ export function assertRoutingRules(value) {
 		if (!Array.isArray(rule.triggers) || rule.triggers.some((t) => typeof t !== "string")) {
 			throw new TypeError("routing rule triggers must be an array of strings");
 		}
+		for (const trigger of rule.triggers) {
+			const label = `routing rule "${rule.agent}".triggers`;
+			if (typeof trigger !== "string" || trigger.length === 0) {
+				throw new TypeError(`${label}: English trigger must be a non-empty string`);
+			}
+			// Compile-check the trigger as a case-insensitive pattern so an
+			// invalid regex fails at build time (schema validation) instead of
+			// crashing routing at match time.
+			try {
+				new RegExp(trigger, "i");
+			} catch (error) {
+				throw new TypeError(`${label}: trigger ${JSON.stringify(trigger)} is not a valid regular expression (${error.message})`);
+			}
+		}
+		if (rule.triggersZh !== void 0 && (
+			!Array.isArray(rule.triggersZh) || rule.triggersZh.some((t) => typeof t !== "string")
+		)) {
+			throw new TypeError("routing rule triggersZh must be an array of strings");
+		}
+		for (const trigger of rule.triggersZh ?? []) {
+			if (typeof trigger !== "string" || trigger.length === 0) {
+				throw new TypeError(`routing rule "${rule.agent}".triggersZh: CJK trigger must be a non-empty string`);
+			}
+		}
 		if (rule.priority !== void 0 && (!Number.isFinite(rule.priority))) {
 			throw new TypeError("routing rule priority must be a finite number");
 		}

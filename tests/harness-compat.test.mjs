@@ -60,8 +60,11 @@ test("Test 4: no MCP rows are introduced or overridden", () => {
 });
 
 test("Test 5: every agent's permission surface is independently defined", () => {
+	// Oracle and Designer are both non-executing decision-makers with the same
+	// read-only investigative surface by design; the other four are each
+	// unique. So exactly five distinct surfaces across six roles.
 	const surfaces = SPECIALISTS.map((s) => JSON.stringify(s.filterFor("posix")));
-	assert.equal(new Set(surfaces).size, SPECIALISTS.length, "each specialist has a distinct surface");
+	assert.equal(new Set(surfaces).size, SPECIALISTS.length - 1, "each specialist has a distinct surface");
 });
 
 test("the composition builds deterministically and matches the generated file", () => {
@@ -95,6 +98,20 @@ test("the custom row is referenced relative to the preset directory", () => {
 	const composition = renderComposition();
 	assert.match(composition, /name: \.\/orchestration\.mjs/);
 	assert.ok(existsSync(join(PRESET_DIR, "orchestration.mjs")));
+});
+
+test("tool-result pruner uses the batch-4 budget (threshold 20000 / head 12000 / tail 3000)", () => {
+	const composition = renderComposition();
+	// DSH's pruner accepts ONLY these three keys and prunes an entire text block
+	// (envelope included) when it exceeds thresholdChars. Assert the exact
+	// values so the multi-agent output budget is pinned, and that no old
+	// 8192/4096/1024 budget leaks into the generated preset.
+	assert.match(composition, /thresholdChars:\s*20000/);
+	assert.match(composition, /headChars:\s*12000/);
+	assert.match(composition, /tailChars:\s*3000/);
+	assert.ok(!/thresholdChars:\s*8192/.test(composition), "old 8192 pruner threshold must not survive");
+	assert.ok(!/headChars:\s*4096/.test(composition), "old 4096 pruner head must not survive");
+	assert.ok(!/tailChars:\s*1024/.test(composition), "old 1024 pruner tail must not survive");
 });
 
 test("envelope and routing markers resolve inside the orchestrator persona", () => {

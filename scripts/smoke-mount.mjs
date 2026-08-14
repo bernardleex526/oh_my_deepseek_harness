@@ -18,8 +18,8 @@
  * @module multi-agent-orchestrator/scripts/smoke-mount
  */
 
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { PRESET_ID } from "../src/config/defaults.js";
@@ -27,7 +27,12 @@ import { SPECIALISTS } from "../src/agents/catalog.js";
 import { SUBAGENT_TOOLS, ORCHESTRATOR_ALLOW } from "../src/permissions/agent-permissions.js";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const DEFAULT_CHECKOUT = "C:\\Users\\admin\\AppData\\Local\\npm-cache\\_npx\\1e7f6d9597241db0\\node_modules\\@deepseek-ai";
+/**
+ * Default harness checkout: `node_modules/@deepseek-ai` in the repo root,
+ * i.e. the location the devDependency install places the packages. Resolved
+ * via node:path so it works on both CI runners.
+ */
+const DEFAULT_CHECKOUT = join(resolve(ROOT), "node_modules", "@deepseek-ai");
 const CHECKOUT = process.argv[2] ?? process.env.DSH_CHECKOUT ?? DEFAULT_CHECKOUT;
 
 /** Load a package module from the checkout by package name. */
@@ -43,6 +48,11 @@ async function loadPackage(name) {
  */
 export async function smokeMount() {
 	const require = createRequire(import.meta.url);
+	if (!existsSync(join(CHECKOUT, "dsh-app-boot")) || !existsSync(join(CHECKOUT, "dsh-base"))) {
+		throw new Error(
+			`DSH checkout unavailable at "${CHECKOUT}" — run \`npm install\` (installs @deepseek-ai/* under node_modules/@deepseek-ai), or set DSH_CHECKOUT to an installed harness`
+		);
+	}
 	const { boot, composeEntries } = await loadPackage("dsh-app-boot");
 	const { randomUUID } = await import("node:crypto");
 	const { SessionId } = await loadPackage("dsh-session");

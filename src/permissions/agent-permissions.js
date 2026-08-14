@@ -25,7 +25,7 @@ export function shellTool(platform = process.platform) {
 }
 /** All shell tool names across platforms (for tests/validation). */
 export const SHELL_TOOLS = ["bash", "pwsh"];
-/** The web_search tool (web_fetch is disabled in this deployment). */
+/** The web_search tool. */
 export const WEB_SEARCH_TOOL = "web_search";
 /** The user-facing question tool. */
 export const ASK_USER_TOOL = "ask_user_question";
@@ -101,14 +101,15 @@ export function specialistFilter(spec, platform = process.platform) {
  * |-----------|------|--------|-----|-------|------|------|-----|
  * | Explorer  | fs   | search | no  | ro*   | no   | no   | no  |
  * | Librarian | no   | no     | yes | no    | no   | no   | no  |
- * | Observer  | fs   | search | lim | yes   | no   | yes  | no  |
+ * | Observer  | fs   | search | lim | yes*  | no   | yes  | no  |
  * | Oracle    | ro   | search | lim | no    | no   | no   | no  |
  * | Designer  | ro   | search | lim | no    | no   | no   | no  |
  * | Fixer     | fs   | search | lim | yes   | yes  | yes  | no  |
  *
- * *Explorer's shell is read-only by prompt discipline only; DSH cannot express
- * read-only shell at the permission layer, so its prompt hard-restricts shell
- * use to non-mutating commands.
+ * *Explorer's and Observer's shell access is read-only by prompt discipline
+ * only; DSH cannot express a read-only shell at the permission layer, so their
+ * prompts hard-restrict shell use to non-mutating (observational) commands.
+ * Design/decision makers (Oracle, Designer) have no shell at all.
  *
  * @type {Record<string, object>}
  */
@@ -138,10 +139,9 @@ export const SPECIALIST_PERMISSIONS = {
 	designer: {
 		read: ["read", "read_image"],
 		search: SEARCH_TOOLS,
-		web: true,
-		// Design-doc table: Designer Shell = Limited (inspecting the running
-		// UI / dev environment), Edit = Optional (we choose No — specs only).
-		shell: true
+		web: true
+		// No shell: Designer is a decision-maker that produces specifications,
+		// not an executor. It has no shell, write, or edit tools.
 	},
 	fixer: {
 		read: FS_TOOLS,
