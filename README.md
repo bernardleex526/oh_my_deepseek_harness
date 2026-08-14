@@ -1,4 +1,4 @@
-# dsh-multi-agent-orchestrator
+# oh_my_deepsee_harness
 
 > DeepSeek Harness 多智能体编排模式 — 灵感来自 [oh-my-opencode-slim](https://github.com/alvinunreal/oh-my-opencode-slim)
 
