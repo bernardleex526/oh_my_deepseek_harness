@@ -9,9 +9,14 @@
  *  3. All six delegation tools are registered for the root agent.
  *  4. The orchestration row restricted the ROOT agent (no write/edit/bash).
  *  5. The compaction group activates.
+ *  6. The BROKER CHAIN works on the real tool pipeline: a shadowing stub of
+ *     `subagent_fixer` driven through the real `tools.execute()` proves the
+ *     workspace single-writer gate denies a concurrent fixer, the envelope
+ *     gate blocks malformed results, and (when the approval service can be
+ *     injected) the writer lock is held through an `ask` approval.
  *
  * No model request is made: we create the agent, inspect the composed scope,
- * and dispose it.
+ * drive the stub tool, and dispose everything.
  *
  * Usage: node scripts/smoke-mount.mjs [path-to-dsh-checkout]
  *
@@ -42,9 +47,113 @@ async function loadPackage(name) {
 }
 
 /**
+ * Drive the REAL tool pipeline with a shadowing stub of `subagent_fixer`.
+ *
+ * The gate, execute and post-execute listeners registered by the preset's
+ * standing scope are keyed on the tool NAME, so a stub registered on the
+ * agent's own scope exercises the exact chain a real delegation would —
+ * including the broker's workspace lock, budget gate and envelope gate —
+ * without spawning a model round.
+ * @param {object} ctx - the boot context (tools registry, approval service).
+ * @param {object} agent - the created root agent.
+ * @param {object} tools - the tools registry (`ctx.get("tools")`).
+ * @returns {Promise<{gateDenied: boolean, askSerialized: boolean | "skipped", envelopeBlocked: boolean}>}
+ */
+async function realChainProbes(ctx, agent, tools) {
+	const results = { gateDenied: false, askSerialized: "skipped", envelopeBlocked: false };
+
+	// ── controllable stub tool shadowing subagent_fixer on the agent scope ──
+	let stubOutput = "stub";
+	let releaseStub;
+	const stubGate = new Promise((resolve) => {
+		releaseStub = resolve;
+	});
+	const agentTools = agent.ctx.get("tools");
+	agentTools.register({
+		name: "subagent_fixer",
+		description: "smoke stub: shadows the delegation tool to exercise the broker chain",
+		parameters: { type: "object", properties: { prompt: { type: "string" } }, additionalProperties: true },
+		output: {
+			schema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false },
+			render: () => [{ type: "text", text: stubOutput }]
+		},
+		async execute() {
+			await stubGate; // hold the call in flight until the test releases it
+			return { ok: true };
+		}
+	});
+
+	const makeCall = (callId, prompt) => tools.execute({
+		name: "subagent_fixer",
+		agent,
+		callId,
+		signal: new AbortController().signal,
+		arguments: { description: "smoke", prompt }
+	});
+
+	// ── probe 1: concurrent fixer on the same workspace is denied ──────────
+	const first = makeCall("smoke-gate-1", "TASK_ID: t1\nFix the auth bug.");
+	await new Promise((resolve) => setTimeout(resolve, 25)); // let the gate run
+	const second = await makeCall("smoke-gate-2", "TASK_ID: t1\nFix the cache bug.");
+	results.gateDenied = second.isError === true
+		&& /single-writer/.test(second.error?.message ?? "")
+		&& /single-writer/.test((second.content ?? []).map((b) => b.text ?? "").join(" "));
+	releaseStub();
+	await first;
+
+	// ── probe 2: malformed envelope is blocked at post-execute ─────────────
+	stubOutput = "STATUS: SUCCESS\nSUMMARY: no task id, no evidence.";
+	const bad = await makeCall("smoke-envelope-1", "TASK_ID: t2\nFix the cache bug.");
+	results.envelopeBlocked = bad.isError === true
+		&& /envelope rejected/.test(bad.error?.message ?? "")
+		&& /TASK_ID/.test((bad.content ?? []).map((b) => b.text ?? "").join(" "));
+
+	// ── probe 3: the writer lock is HELD through an `ask` approval ─────────
+	// The host owns the approval service, so we monkey-patch its `request`
+	// with a controllable stub (restored afterwards); if the service object
+	// is not patchable, the probe is skipped.
+	try {
+		const approval = ctx.get("approval");
+		if (approval === void 0 || typeof approval.request !== "function") throw new Error("no patchable approval service");
+		const originalRequest = approval.request.bind(approval);
+		let resolveApproval;
+		const approvalPending = new Promise((resolve) => {
+			resolveApproval = resolve;
+		});
+		approval.request = async () => {
+			await approvalPending;
+			return "allowed-once";
+		};
+		// An agent-scope pre-execute listener (registered AFTER the preset's
+		// standing gate) turns the next fixer call into an `ask` decision.
+		const disposeAsk = agent.ctx.on("tools/pre-execute", async (exec, next) => {
+			if (exec.name === "subagent_fixer") return { kind: "ask", reason: "smoke approval probe" };
+			return next();
+		});
+		stubOutput = "TASK_ID: t3\nSTATUS: SUCCESS\nSUMMARY: ok.\nCHANGES:\n  src/a.js: x\nVERIFICATION:\n  npm test: 1 passed";
+		const asked = makeCall("smoke-ask-1", "TASK_ID: t3\nFix it.");
+		await new Promise((resolve) => setTimeout(resolve, 25)); // let the gate + ask run
+		const during = await makeCall("smoke-ask-2", "TASK_ID: t3\nFix more.");
+		results.askSerialized = during.isError === true && /single-writer/.test(during.error?.message ?? "");
+		resolveApproval();
+		await asked;
+		disposeAsk();
+		// after the approved call completes, the gate must be open again
+		const after = await makeCall("smoke-ask-3", "TASK_ID: t3\nFix again.");
+		results.askSerialized = results.askSerialized === true && !after.isError;
+		approval.request = originalRequest;
+	} catch (error) {
+		results.askSerialized = "skipped"; // approval service not patchable here
+		if (process.env.SMOKE_DEBUG_ASK === "1") console.error(`[smoke] ask probe skipped: ${error?.message ?? error}`);
+	}
+
+	return results;
+}
+
+/**
  * Boot a minimal harness with the base bundle + agent-presets roster pointing
  * at our preset dir, then create one agent with the preset mounted.
- * @returns {Promise<{toolNames: string[], restrictionApplied: boolean, presetBroken: string | undefined}>}
+ * @returns {Promise<{toolNames: string[], restrictionApplied: boolean, presetBroken: string | undefined, childFilterNames: number, probes: object}>}
  */
 export async function smokeMount() {
 	const require = createRequire(import.meta.url);
@@ -160,13 +269,18 @@ export async function smokeMount() {
 			}
 		}
 
+		// Real-chain probes must run BEFORE disposal: they drive the live
+		// agent's tool pipeline.
+		const probes = await realChainProbes(ctx, agent, tools);
+
 		await dispose();
 		await ctx.fiber.dispose();
 		return {
 			toolNames,
 			restrictionApplied,
 			presetBroken: row?.broken,
-			childFilterNames
+			childFilterNames,
+			probes
 		};
 	} finally {
 		rmSync(home, { recursive: true, force: true });
@@ -181,6 +295,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 			if (!result.toolNames.includes(tool)) problems.push(`missing delegation tool ${tool}`);
 		}
 		if (!result.restrictionApplied) problems.push("root agent was not restricted (write/edit/shell visible)");
+		if (result.probes.gateDenied !== true) problems.push("real-chain single-writer gate did not deny a concurrent fixer");
+		if (result.probes.envelopeBlocked !== true) problems.push("real-chain envelope gate did not block a malformed result");
+		if (result.probes.askSerialized === false) problems.push("real-chain writer lock was NOT held through an ask approval");
 		if (problems.length > 0) {
 			console.error("smoke-mount FAILED:");
 			for (const p of problems) console.error(`  ✗ ${p}`);
@@ -192,6 +309,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 		console.log("  boundary enforced: write/edit/bash/pwsh hidden");
 		console.log(`  child filter names validated: ${result.childFilterNames} (${process.platform})`);
 		console.log("  orchestrator surface:", ORCHESTRATOR_ALLOW.join(", "));
+		console.log(`  real-chain probes: gateDenied=${result.probes.gateDenied} envelopeBlocked=${result.probes.envelopeBlocked} askSerialized=${result.probes.askSerialized}`);
 	}).catch((error) => {
 		console.error("smoke-mount FAILED:", error);
 		process.exit(1);

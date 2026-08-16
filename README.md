@@ -303,13 +303,14 @@ node --test tests/
 |---|---|
 | `routing.test.mjs` | 路由策略：模糊任务不直接路由 Fixer |
 | `permissions.test.mjs` | 权限矩阵：Explorer 不能写、Librarian 仅 web、Fixer 可写且唯一、Designer 无 shell、任何 specialist 看不到 `subagent_*` |
-| `delegation.test.mjs` | 六个委派工具 spawn 语义、maxDepth 1、边界行只收窄根代理 |
-| `model-routing.test.mjs` | 每 Agent 模型路由配置的加载与校验 |
-| `envelope.test.mjs` | 信封**状态与字段校验**：`parseEnvelope`/`isKnownStatus` 接受四个标准状态，拒绝未知/缺失/重复字段，缺可选 section 给 warning，完整 envelope 可回环解析 |
-| `handoff.test.mjs` | handoff **委派提示词渲染**：role-specific 的“可修改/禁止修改”约束 + 每个委派都内嵌信封模板（envelope 状态校验在上面的 `envelope.test.mjs`） |
-| `orchestration.test.mjs` | 控制平面运行时机制：fail-closed 边界安装 + 单写者守卫（取锁/拒绝/完成与错误路径解锁/兜底） |
+| `delegation.test.mjs` | 六个委派工具 spawn 语义、maxDepth 1、边界行只收窄根代理、preset 行只导入同目录兄弟模块 |
+| `model-routing.test.mjs` | 每 Agent 模型路由配置的加载与校验、agentOptions 的 YAML 安全引号发射 |
+| `envelope.test.mjs` | 信封**状态与字段校验**（v2 多行协议）：`parseEnvelope`/`isKnownStatus`/`extractTaskId` 接受四个标准状态与 TASK_ID，拒绝未知/缺失/重复字段，多行 CHANGES/VERIFICATION/SPECIFICATION 段完整捕获，缺可选 section 给 warning |
+| `handoff.test.mjs` | handoff **委派提示词渲染**：role-specific 约束 + 每个委派首行声明 TASK_ID + 内嵌信封模板 |
+| `broker.test.mjs` | **OrchestrationBroker 单元**：workspace 键写锁与所有权、TASK_ID 门禁、每任务预算/重试/连续失败、envelope 门禁（含角色证据段）、结果存储、状态报告 |
+| `orchestration.test.mjs` | 控制平面运行时机制：fail-closed 边界安装 + 单写者守卫（workspace 粒度、ask/deny 保持锁、throw 释放、完成/错误路径解锁） |
 | `harness-compat.test.mjs` | 无 host patch 层、不改宿主行、无 provider/MCP 行、确定性构建、工具结果裁剪预算（20000/12000/3000） |
-| `mount.test.mjs` | **真实集成**：启动 harness、挂载 preset、断言组合激活与边界生效 |
+| `mount.test.mjs` | **真实集成**：启动 harness、挂载 preset、断言组合激活与边界生效、**真实工具链探针**（并发 Fixer 被拒、坏 envelope 被 block、ask 审批期间锁保持） |
 
 ---
 
@@ -327,20 +328,37 @@ node --test tests/
 - 更早的 `0.0.1-rc.1 / rc.3` 这条线**无法从公共 npm 安装**（依赖树损坏），
   因此**不在支持范围内**。请使用 `0.1.0-rc.x` 及以上。
 
-### 运行时调度是“模型跟随”而非机械状态机
+### 运行时调度是“模型跟随 + 机械门禁”
 
 - 路由表 + **ROUTING PRECEDENCE**（风险门 → 明确目标 → 信号强度 → 默认
   Explorer）是内嵌在 **Orchestrator prompt** 里的纪律。`route()` /
   `scoreTask()` 是 CI 验证的**参考实现**，不是运行时钩子——它们不参与实际
   分发决策。
-- 本文档中的单写者守卫（`orchestration.mjs` 里的 `tools/pre-execute` /
-  `tools/execute` / `tools/post-execute`）只做**单写者守卫**，不实现机器化
-  路由状态机。**在当前的 preset-only 架构下，无法实现机械的“分派前状态
-  机”**——任务分解与路由完全交给 Orchestrator 模型。
-- 同理，`parseEnvelope()` 与 `renderDelegationPrompt()` 是**库参考工具**，
-  由单元测试验证；它们在当前 preset-only 架构下**不是运行时钩子**——运行时
-  envelope 校验/委派提示词渲染需要 DSH 宿主集成，本 preset 并未接入，故不会
-  在真实分发时机械校验 specialist 的返回信封。
+- **机械门禁由 `orchestration.mjs` + `broker.mjs` 在真实工具链上强制**（在
+  `tools/pre-execute` / `tools/execute` / `tools/post-execute` 瀑布中）：
+  - **TASK_ID 协议**：每次委派 prompt 必须以 `TASK_ID: <id>` 开头；缺失即
+    在门前被机械 DENY。
+  - **每任务预算**：每个 TASK_ID 最多 12 次委派、每个 specialist 每任务最多
+    3 次尝试、每任务 3 次连续非 SUCCESS 后机械停止；换新 TASK_ID 即重置。
+  - **envelope 门禁**：每次委派返回后，结果文本被机械解析并校验
+    （多行 CHANGES / VERIFICATION / SPECIFICATION / OBSERVED 等段均支持）；
+    STATUS / SUMMARY / TASK_ID 缺失、TASK_ID 与 prompt 不一致、重复段、
+    SUCCESS 但缺少角色证据段（Fixer 的 CHANGES+VERIFICATION、Observer 的
+    OBSERVED、Designer 的 SPECIFICATION）都会被 **block** 并以错误形式返回
+    给 Orchestrator，不会当作成功结果。
+  - **broker_status 工具**：Orchestrator 可随时读取每任务预算、尝试次数、
+    连续失败数与最近结果。
+- `parseEnvelope()` / `renderDelegationPrompt()` 不再是纯参考工具：解析器
+  已接入 post-execute 真实执行路径（上述 envelope 门禁），委派提示词模板
+  也内嵌 TASK_ID 协议。`route()` / `scoreTask()` 仍只供 prompt 渲染与测试。
+
+### TASK_ID 协议
+
+- 每个子问题一个 `TASK_ID`（如 `t1`、`t2`…），重试/追问沿用同一 id，
+  新子问题开新 id。broker 以 (session, taskId) 为键记录预算与结果；
+  envelope 必须原样回显 prompt 里的 TASK_ID，否则被机械拒绝。
+- 这是“任务边界”的机械近似：id 分配纪律仍由 prompt 约束（滥用同一 id
+  会合并预算；换 id 绕过预算属于违规用法）。
 
 ### 子代理皆为 one-shot
 
@@ -366,20 +384,27 @@ node --test tests/
 ### 单写者（single-writer）
 
 - **Fixer 委派由机械守卫 + prompt 规则双重串行**：`orchestration.mjs` 在
-  `tools/pre-execute` 取锁、`tools/execute` 的 `finally` 解锁（并在
-  `tools/post-execute` 兜底），确保任意时刻最多一个写能力的委派在途。
+  `tools/pre-execute` 按**规范化 workspace**（会话 cwd，大小写折叠）取锁、
+  `tools/execute` 的 `finally` 解锁（`tools/post-execute` 兜底），保证同一
+  项目上任意时刻最多一个写能力的委派在途；两个会话打开同一项目也会互相
+  串行，不同项目互不阻塞。
+- **锁在 `ask` 审批期间保持持有**：DSH 的 `tools/pre-execute` 每次执行只跑
+  一次，审批通过后直接 dispatch、不会重跑 pre-execute（dsh-tools
+  lib/index.js:3098-3130），因此审批中的 Fixer 也必须占住锁。拒绝/取消/
+  通过后的释放均由 execute-finally 或 post-execute 按 token 所有权完成，
+  不会悬挂也不会被无关调用误释放。此行为由 smoke 真实链探针验证。
 - **不存在自动 workspace 回滚**。Fixer 按 `TRANSACTION RULES` 返回**完整 diff**
   并在 `PARTIAL` / `BLOCKED` 时给出明确的 keep-vs-revert 决策（可回滚则
   `git checkout -- <files>`，否则列出遗留修改的文件与原因），由 Orchestrator
   决定保留还是回滚——这是文档化的显式策略，不是自动能力。
 
-### 预算（经费）是 prompt 强制，不是 harness 原生
+### 预算（经费）是机械强制 + prompt 分配纪律
 
-- 每任务 **最多 12 次 specialist 委派**、**最多 4 个信息代理并行**、**每个
-  specialist 最多 2 次重试**、**3 次连续非 SUCCESS → 停止**——这些全部内嵌在
-  Orchestrator 的 **BUDGET & TERMINATION** 一节，且 DSH 在**本版本没有
-  任务预算 API**（`@deepseek-ai/dsh@0.1.0-rc.6` 未提供），因此预算只能靠
-  prompt 纪律执行。唯一的**硬性**（非 prompt）强制是上面的单写者守卫。
+- 每 TASK_ID **最多 12 次 specialist 委派**、每个 specialist 每 TASK_ID
+  **最多 3 次尝试（1 次初始 + 2 次重试）**、每 TASK_ID **3 次连续非 SUCCESS
+  即机械停止**——由 broker 在 `tools/pre-execute` 机械 DENY（附原因），
+  `broker_status` 可查当前计数。TASK_ID 的分配与“何时该停”仍由
+  Orchestrator 的 BUDGET & TERMINATION 提示词纪律决定。
 
 ### web_fetch 限制
 
@@ -388,10 +413,31 @@ node --test tests/
 
 ### stub 模型 / 评估说明
 
-- 完整的“真实模型调用”行为评估需要**活的 provider**。CI 只验证
-  挂载 / 权限 / 路由 / handoff / envelope 等**机械机制**；不跑真实模型回合。
+- 完整的“真实模型调用”行为评估需要**活的 provider**。CI 验证
+  挂载 / 权限 / 路由 / handoff / envelope / **真实工具链门禁探针**（用 stub
+  工具影子化 `subagent_fixer` 驱动真实 `tools.execute()`）等**机械机制**；
+  不跑真实模型回合。
 - 仓库的 devDeps 中**没有可用的 stub / mock LLM provider**（已检查
   `node_modules/@deepseek-ai`），因此未提供真实调用的集成测试。
+
+### 其余已知限制（如实记录）
+
+- **无跨进程全局锁**：单写者锁与 broker 状态是进程本地的。同机多进程同时
+  打开同一项目时，进程间不能互相看到对方的锁；审计建议的 lockfile 方案
+  需要宿主支持，当前未实现。
+- **无 artifact store**：大结果仍整体经过 pruner 裁剪（20000/12000/3000，
+  无字段排除）；broker 只记录 envelope 摘要与状态，不保存完整 diff/日志。
+- **根代理身份靠持久化的 `parentSession` 头判断**：恢复/导入一个曾是子代理
+  的会话时，其头仍带 `parentSession`，会被当作子代理而**不安装**
+  Orchestrator 边界（即不会收窄工具）。这是 rc.6 宿主没有
+  “活根会话”信号导致的边界情况，已记录。
+- **没有机械的完成状态机**：IMPLEMENTED → VERIFIED → REVIEWED → COMPLETE
+  的流转仍由 Orchestrator 模型执行；机械门禁只保证“坏结果进不来、预算
+  超不了、写不并发”。完整的任务图状态机需要宿主级调度器，超出 preset
+  范围。
+- **Explorer / Observer 的 shell 只读**仍是 prompt 纪律（DSH 权限层无法
+  表达只读 shell），它们理论上可用 shell 写文件，从而绕过 Fixer 写锁；
+  这是宿主的权限模型限制，README 与对应 prompt 均已明示。
 
 ---
 
@@ -401,6 +447,15 @@ node --test tests/
   存在且包含 `agent.cordis.yml`；Web 端选择器实时读盘，无需重启
 - **改了 prompts 没生效？** prompts 在构建时内联进 `agent.cordis.yml`，
   改完运行 `node scripts/build.mjs && node scripts/install.mjs --force`
+  （`--force` 现在是**整目录替换**，旧版本残留文件不会存活）
+- **委派被 DENY 说“TASK_ID”/“budget exhausted”？** 每次委派 prompt 首行
+  必须是 `TASK_ID: <id>`（同子问题复用、新子问题开新 id）；预算按
+  TASK_ID 计数，`broker_status` 可查当前计数。超限后要么开新子问题的
+  新 id，要么停止并报告。
+- **结果被 block 说“envelope rejected”？** specialist 未按协议返回信封
+  （缺 STATUS/SUMMARY/TASK_ID、TASK_ID 不匹配、Fixer SUCCESS 缺
+  CHANGES/VERIFICATION 等）。重新委派并明确要求完整信封；该次尝试已计入
+  预算。
 - **想要后台委派 / fork？** 当前六个委派工具为前台 one-shot（并行通过一条
   消息内多个工具调用实现）。**continuable 会话因架构限制未启用**：DSH 把跟随
   子代理的 `send_message` 工具注册在 continuable 子代理开始之后，而

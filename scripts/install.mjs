@@ -11,7 +11,7 @@
  * @module multi-agent-orchestrator/scripts/install
  */
 
-import { cpSync, existsSync, readdirSync } from "node:fs";
+import { cpSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +29,10 @@ export function resolveDshHome() {
 
 /**
  * Install the preset.
+ *
+ * A forced install REPLACES the target directory instead of merging into it:
+ * `cpSync(..., { force: true })` is a directory merge, so files removed from
+ * the preset in a newer version would otherwise linger in the installation.
  * @param {object} [opts] - install options.
  * @param {boolean} [opts.force] - overwrite an existing installation.
  * @param {string} [opts.home] - DSH home override.
@@ -42,7 +46,12 @@ export function install({ force = false, home = resolveDshHome() } = {}) {
 	if (existsSync(target) && readdirSync(target).length > 0 && !force) {
 		throw new Error(`${target} already exists — pass force: true to overwrite`);
 	}
-	cpSync(SOURCE, target, { recursive: true, force });
+	if (existsSync(target)) {
+		// Replace, never merge: stale files from older versions must not
+		// survive a reinstall.
+		rmSync(target, { recursive: true, force: true });
+	}
+	cpSync(SOURCE, target, { recursive: true });
 	return target;
 }
 

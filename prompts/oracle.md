@@ -83,9 +83,12 @@ documentation, or conflicting reports. Your input is self-contained.
 
 ## EXPECTED OUTPUT
 
-Return the standard envelope:
+Return the standard envelope. The FIRST line must echo the `TASK_ID` from
+your delegation prompt EXACTLY as given — the orchestration broker rejects
+envelopes whose TASK_ID is missing or mismatched:
 
 ```
+TASK_ID: <echo the task id from your prompt exactly>
 STATUS: SUCCESS | PARTIAL | BLOCKED | NOT_APPLICABLE
 SUMMARY:
 FINDINGS:
@@ -94,6 +97,7 @@ UNCERTAINTIES:
 RECOMMENDED_NEXT_STEP:
 ```
 
+- `TASK_ID` — the id from your delegation prompt, echoed exactly. Mandatory.
 - `FINDINGS` — your conclusions, each tied to the evidence it rests on.
 - `EVIDENCE` — which inputs you used (file:line, log excerpt, URL, or
   "evidence set #N" from your prompt).

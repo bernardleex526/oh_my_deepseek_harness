@@ -49,14 +49,23 @@ test("maxDepth 1 means a specialist can never spawn another agent", () => {
 	}
 });
 
-test("orchestration.mjs is a dependency-free preset row", () => {
+test("orchestration.mjs is a dependency-free preset row (siblings only)", () => {
 	assert.equal(name, "orchestration");
 	assert.equal(typeof apply, "function");
-	// The row must not import anything from the harness — it is loaded from
-	// the preset directory where no node_modules exists. Enforce by checking
-	// its source contains no import/require statements.
-	const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "orchestration", "orchestration.mjs"), "utf8");
-	assert.ok(!/^\s*(import|export\s+\{[^}]*\}\s+from|require\()/m.test(source), "orchestration.mjs must be import-free");
+	// The row is loaded from the preset directory where no node_modules
+	// exists, so it may only import SIBLING files of the preset dir
+	// (`./broker.mjs`, `./protocol.mjs`) — never bare specifiers or
+	// harness packages.
+	const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+	const source = readFileSync(join(ROOT, "src", "orchestration", "orchestration.mjs"), "utf8");
+	assert.ok(!/^\s*import\s+.*\s+from\s+["'][^.]/m.test(source), "orchestration.mjs must not import bare specifiers");
+	assert.match(source, /from "\.\/broker\.mjs"/, "orchestration.mjs must import ./broker.mjs");
+	// The sibling modules must be equally node_modules-free.
+	const brokerSource = readFileSync(join(ROOT, "src", "orchestration", "broker.mjs"), "utf8");
+	const protocolSource = readFileSync(join(ROOT, "src", "orchestration", "protocol.mjs"), "utf8");
+	assert.ok(!/^\s*import\s+.*\s+from\s+["'][^.]/m.test(brokerSource), "broker.mjs must not import bare specifiers");
+	assert.match(brokerSource, /from "\.\/protocol\.mjs"/, "broker.mjs must import ./protocol.mjs");
+	assert.ok(!/^\s*import\b/m.test(protocolSource), "protocol.mjs must be import-free");
 });
 
 test("orchestration row restricts only the ROOT agent (not children)", async () => {

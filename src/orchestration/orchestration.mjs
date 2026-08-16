@@ -1,16 +1,30 @@
 /**
  * The orchestration preset row: enforces the control-plane permission boundary
- * and the single-writer delegation guard.
+ * and the mechanical multi-agent runtime guard.
  *
  * Mounted by the `orchestrator` agent preset (agent.cordis.yml row
- * `- id: orchestration / name: ./orchestration.mjs`). It listens for
- * `agent/created` in the preset's standing scope and narrows each ROOT agent's
- * tool surface to the Orchestrator allow-list. It also installs the
- * `tools/pre-execute` + `tools/execute` (+ `tools/post-execute` fallback)
- * single-writer guard so only one write-capable (Fixer) delegation is in
- * flight at once. Specialist children are untouched here: their surfaces are
- * already narrowed by the delegation tool's `toolFilter`, which is compiled
- * into `tools.restrict()` on the child's own scope layer during setup.
+ * `- id: orchestration / name: ./orchestration.mjs`). It:
+ * - listens for `agent/created` and narrows each ROOT agent's tool surface to
+ *   the Orchestrator allow-list (children are filtered per-role by the
+ *   delegation tools' `toolFilter` instead);
+ * - installs the `tools/pre-execute` + `tools/execute` (+ `tools/post-execute`)
+ *   chain that drives the OrchestrationBroker (`./broker.mjs`): workspace-keyed
+ *   single-writer serialization, per-task delegation/retry/failure budgets,
+ *   and the mechanical envelope gate that BLOCKS malformed specialist results
+ *   instead of handing them to the model as success;
+ * - registers the read-only `broker_status` tool so the Orchestrator can see
+ *   the broker's per-task state.
+ *
+ * The lock semantics differ from the original guard in one crucial way: the
+ * writer lock is now HELD through an `ask` approval decision. dsh-tools runs
+ * `tools/pre-execute` exactly once per execution and does NOT re-run it after
+ * an approval upgrades `ask` → `allow` (dsh-tools lib/index.js:3098-3130), so
+ * releasing on `ask` let an approved fixer dispatch without the lock. Because
+ * every non-throw outcome (allow-dispatch, deny, ask-cancelled) reaches
+ * `tools/post-execute` (lib/index.js:2995-3001), the ownership-scoped release
+ * in post-execute (plus the execute `finally`) guarantees the lock is always
+ * cleared exactly once; only a downstream pre-execute THROW bypasses
+ * post-execute, and that path releases in the catch below.
  *
  * Why a root-only restriction:
  * - The preset composition registers the FULL tool union (specialists need
@@ -26,12 +40,14 @@
  * the first model request, so the catalog is narrowed before any request is
  * composed — the KV-cache prefix stays stable from request one.
  *
- * This file is intentionally IMPORT-FREE: it is loaded from the preset
- * directory (a user-writable location with no node_modules), so it may only
- * use the `ctx` API, the `agent` payload, and globals.
+ * This file may only import SIBLING files of the preset directory
+ * (`./broker.mjs`, `./protocol.mjs` — no node_modules needed); it never
+ * imports harness packages.
  *
  * @module multi-agent-orchestrator/orchestration
  */
+
+import { createBroker, isDelegationTool, sessionKey } from "./broker.mjs";
 
 /** Delegation tool names the Orchestrator may invoke. */
 const SUBAGENT_TOOLS = [
@@ -43,54 +59,13 @@ const SUBAGENT_TOOLS = [
 	"subagent_fixer"
 ];
 
-/** The single write-capable delegation tool (the executor sibling). */
-const FIXER_DELEGATION = "subagent_fixer";
-
-/**
- * Single-writer mechanical guard state.
- *
- * `writerLocks` is a per-caller lock map (`Map<callerKey, token>`). Only one
- * write-capable (Fixer) delegation may be in flight per caller at once, so
- * all fixer calls issued by the SAME root session/caller serialize — two of
- * them can never interleave writes. Different callers (separate root
- * sessions running in the same process) get independent keys and never block
- * each other, because their workspace writes belong to disjoint sessions.
- *
- * Each key's value records the owning execution's registry token. Cleanup
- * only ever clears a key's lock for the exact call that took it — a denied
- * (or otherwise unrelated) call can never release another caller's lock, and
- * a non-owner caller B can never clear caller A's held lock.
- *
- * This file is intentionally IMPORT-FREE and process-local. Each process that
- * loads the preset row gets its own copy of the guard state, which is the
- * correct granularity: delegations are dispatched by one agent loop in one
- * process, so the map is the single point of truth for that process. Entries
- * are created lazily on acquire and removed on release, so the map never
- * grows unboundedly.
- */
-const writerLocks = new Map();
-
-/**
- * Compute the per-caller lock key from an execution's caller identity.
- *
- * `exec.agent` is the agent on whose behalf the call runs (set by the agent
- * loop); a root session agent's `id` is its SessionId. Calls without an
- * agent (rare, e.g. direct SDK sub-dispatches) share the `"unknown"` bucket
- * so they still serialize against each other. Two separate root sessions
- * have distinct agent ids → distinct keys → independent write guards.
- * @param {object} exec - the pending tool execution carrying `.agent`.
- * @returns {string} the caller key.
- */
-function callerKey(exec) {
-	return `${exec.agent?.id ?? "unknown"}`;
-}
-
 /**
  * The Orchestrator's own tool surface (allow list).
  *
  * Control plane: limited read/search, the user channel, task tracking,
- * web search, child catalog, and delegation. NO write/edit, NO shell, NO
- * background-job tools. Platform-independent: no shell tool is named here.
+ * web search, child catalog, the broker report, and delegation. NO write/edit,
+ * NO shell, NO background-job tools. Platform-independent: no shell tool is
+ * named here.
  */
 export const ORCHESTRATOR_ALLOW = [
 	"read",
@@ -101,6 +76,7 @@ export const ORCHESTRATOR_ALLOW = [
 	"todo_write",
 	"web_search",
 	"list_agents",
+	"broker_status",
 	...SUBAGENT_TOOLS
 ];
 
@@ -108,8 +84,26 @@ export const ORCHESTRATOR_ALLOW = [
 export const name = "orchestration";
 
 /**
- * Plugin entry: register the root-agent boundary listener and the
- * single-writer delegation guard.
+ * Process-local broker instance for this preset load.
+ *
+ * Exported so tests can reset it between cases; the runtime only ever uses
+ * the module singleton.
+ */
+export const broker = createBroker();
+
+/** Join the text blocks of a normalized tool result into one string. */
+function resultText(result) {
+	const content = result?.content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((block) => block?.type === "text" && typeof block.text === "string")
+		.map((block) => block.text)
+		.join("\n");
+}
+
+/**
+ * Plugin entry: register the root-agent boundary listener, the broker-driven
+ * tool chain, and the read-only broker_status tool.
  * @param {object} ctx - the preset standing scope's Cordis context.
  */
 export function apply(ctx) {
@@ -128,114 +122,97 @@ export function apply(ctx) {
 		tools.restrict({ allow: [...ORCHESTRATOR_ALLOW] });
 	});
 
-	// ── single-writer gate ─────────────────────────────────────────────────
+	// ── mechanical delegation chain ────────────────────────────────────────
 	//
-	// `tools/pre-execute` is the reorderable allow/deny gate (dsh-tools
-	// lib/index.js:3098 dispatches it via `ctx.waterfall(carrier,
-	// "tools/pre-execute", exec, () => Promise.resolve({ kind: "allow" }))`).
-	// We take the lock HERE — before dispatch — so a second concurrent Fixer
-	// delegation from the same caller is rejected at the gate with a
-	// deniable reason rather than being allowed to start. All non-Fixer
-	// tools pass through untouched (`return next()`), so every other call
-	// keeps the exact default waterfall semantics.
+	// `tools/pre-execute` is the reorderable allow/deny gate. We run the
+	// broker gate HERE — before dispatch — so protocol violations (missing
+	// TASK_ID), exhausted budgets, and concurrent fixer delegations are
+	// rejected at the gate with a deniable reason rather than being allowed
+	// to start. All non-delegation tools pass through untouched.
 	//
-	// CRITICAL: because this listener is one entry in a reorderable chain,
-	// `next()` may (a) delegate to LATER pre-execute listeners that throw, or
-	// (b) yield a final decision that is NOT `{ kind: "allow" }` (a `deny`, or
-	// an unresolved `ask`). In both cases dsh-tools (lib/index.js:3109-3136)
-	// produces a terminal result that bypasses BOTH `tools/execute` and
-	// `tools/post-execute` — so the execute-finally and post-execute fallback
-	// below would never run and the caller's lock would be stranded forever.
-	// We therefore release the lock directly in this branch on every
-	// non-dispatch path:
-	//   - `next()` throws           → release + rethrow.
-	//   - final decision is not allow → release (only if this owner holds it).
-	// This guarantees the lock is cleared exactly once, on the exact call
-	// that took it, even though the real dispatch never happens.
+	// Lock lifecycle (fixer only): acquired in the gate; released exactly once
+	// by whichever of these runs first — the `tools/execute` finally (dispatch
+	// path), the `tools/post-execute` settle (deny / ask-cancelled /
+	// pre-dispatch cancellation paths), or the catch below (a downstream
+	// pre-execute listener throwing, which bypasses BOTH execute and
+	// post-execute). Every release is ownership-scoped to the exact token
+	// that took the lock, so a denied concurrent call can never clear the
+	// owner's lock.
 	ctx.on("tools/pre-execute", async (exec, next) => {
-		if (exec.name !== FIXER_DELEGATION) return next();
-		const key = callerKey(exec);
-		if (writerLocks.has(key)) {
+		if (!isDelegationTool(exec.name)) return next();
+		const gate = broker.gate(exec);
+		if (!gate.ok) {
 			return {
 				kind: "deny",
-				reason: "single-writer: a fixer delegation is already in progress for this caller; writes are serialized — wait for it to finish."
+				reason: gate.reason
 			};
 		}
-		writerLocks.set(key, exec.token);
-		let decision;
 		try {
-			decision = await next();
+			return await next();
 		} catch (error) {
 			// A later listener in the pre-execute chain threw. That becomes a
 			// `final-result` in dsh-tools and never reaches execute/post-execute.
-			releaseLock(key, exec.token);
+			broker.releaseWriter(exec);
 			throw error;
 		}
-		// Returning undefined from a listener means "continue/allow" in the
-		// waterfall; any explicit decision other than allow (deny/ask) means no
-		// dispatch will occur for this call. For `ask`, the approval path may
-		// later dispatch (serviceAsk can upgrade ask → allow), but our lock was
-		// already re-checked per-caller at the gate: releasing here is safe
-		// because a subsequent dispatch re-takes the lock before running. We
-		// release now so a deny/ask outcome can never strand the lock.
-		if (decision === void 0) decision = { kind: "allow" };
-		if (decision.kind !== "allow") {
-			releaseLock(key, exec.token);
-		}
-		return decision;
 	});
 
-	/**
-	 * Clear one caller's writer lock, but only if `token` still owns it.
-	 * Uses a captured `token` so a non-owner completion (e.g. a concurrent
-	 * denied call, or a different caller's call entirely) can never clear an
-	 * owner's lock. Deleting the key keeps the map from growing unboundedly.
-	 * @param {string} key - the caller key.
-	 * @param {symbol} token - the owning execution's registry token.
-	 * @returns {void}
-	 */
-	function releaseLock(key, token) {
-		if (writerLocks.get(key) === token) {
-			writerLocks.delete(key);
-		}
-	}
-
-	// Clear the lock on completion OR error.
+	// Clear the lock on completion OR error, and record that dispatch started.
 	//
 	// Mechanism choice: `tools/execute` is the around-dispatch waterfall
-	// (dsh-tools lib/index.js:3195 — `ctx.waterfall(carrier, "tools/execute",
-	// mutableExec, () => this.dispatchToolBody(mutableExec))`). Its handler
-	// receives `(exec, next)`, where `next()` resolves to the normalized
-	// dispatch result. Wrapping `next()` in a `try/finally` is therefore the
-	// ONLY seam whose cleanup is guaranteed to fire on BOTH the success path
-	// and the error path — a thrown `next()` (pipeline error) still runs the
-	// `finally`, which simply clears the lock before the error propagates.
-	// `tools/post-execute` would NOT cover the "pre-dispatch cancellation"
-	// window (dsh-tools lib/index.js:3110-3126), so execute-finally is the
-	// primary mechanism; we additionally clear in `tools/pre-execute`
-	// (non-dispatch paths) and `tools/post-execute` (ownership scoped) so a
-	// call cancelled between the gate and dispatch can never strand the lock.
+	// (dsh-tools lib/index.js:3195). Wrapping `next()` in a `try/finally` is
+	// the ONLY seam whose cleanup is guaranteed to fire on BOTH the success
+	// path and the error path — a thrown `next()` (pipeline error) still runs
+	// the `finally`, which clears the lock before the error propagates.
 	ctx.on("tools/execute", async (exec, next) => {
 		try {
+			broker.markDispatched(exec);
 			return await next();
 		} finally {
-			releaseLock(callerKey(exec), exec.token);
+			broker.releaseWriter(exec);
 		}
 	});
 
-	// Fallback clear for executions that set the lock at the gate but never
-	// reached `tools/execute` (e.g. cancelled by the caller between the
-	// allow decision and dispatch — a `post-result` that still runs
-	// post-execute, see dsh-tools lib/index.js:3122-3126). Ownership-scoped:
-	// only the exact call that holds the lock releases it, so a denied
-	// concurrent call reaching this point with a different token clears
-	// nothing, and a different caller's completion clears nothing either. The
-	// handler ALWAYS proceeds to `next()` and returns its decision, preserving
-	// the default `{ kind: "accept" }` post-execute semantics for every call
-	// (dsh-tools lib/index.js:3360) — it only clears state; it never changes
-	// a result.
+	// Settle every delegation after dispatch: parse + validate the envelope,
+	// record the attempt, and BLOCK malformed results with corrective
+	// feedback so the model never sees a broken envelope as success. The
+	// handler always delegates to `next()` on the accept path (preserving the
+	// default `{ kind: "accept" }` semantics and any later listeners); only a
+	// rejected envelope short-circuits with the block decision.
 	ctx.on("tools/post-execute", (exec, result, next) => {
-		releaseLock(callerKey(exec), exec.token);
-		return next();
+		if (!isDelegationTool(exec.name)) return next();
+		const outcome = broker.settle(exec, {
+			text: resultText(result),
+			isError: result?.isError === true
+		});
+		return outcome.decision.kind === "block" ? outcome.decision : next();
 	});
+
+	// Read-only broker report tool. Registered on the standing scope so every
+	// agent composed from this preset could technically see it, but only the
+	// Orchestrator's allow-list admits it (specialist toolFilters mask it).
+	// Non-fatal if the tools registry is unavailable on this scope.
+	try {
+		const tools = ctx.get("tools");
+		if (tools?.register !== void 0) {
+			tools.register({
+				name: "broker_status",
+				description: "Read the orchestration broker state for this session: per-task delegation budgets, specialist attempt counts, consecutive failures, and the most recent specialist results.",
+				parameters: { type: "object", properties: {}, additionalProperties: false },
+				isConcurrencySafe: () => true,
+				output: {
+					schema: {
+						type: "object",
+						properties: { report: { type: "string" } },
+						required: ["report"],
+						additionalProperties: false
+					},
+					render: (_args, value) => [{ type: "text", text: value.report }]
+				},
+				execute: (_args, exec) => ({ report: broker.report(sessionKey(exec)) })
+			});
+		}
+	} catch (error) {
+		ctx.logger?.warn?.(`orchestration: broker_status tool registration failed: ${String(error)}`);
+	}
 }

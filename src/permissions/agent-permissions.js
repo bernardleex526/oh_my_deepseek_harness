@@ -35,6 +35,8 @@ export const TODO_TOOL = "todo_write";
 export const JOB_TOOLS = ["job_list", "job_output", "job_kill"];
 /** The child-catalog tool. */
 export const LIST_AGENTS_TOOL = "list_agents";
+/** The broker report tool (registered by the orchestration row). */
+export const BROKER_STATUS_TOOL = "broker_status";
 /** Delegation tool names, one per specialist. */
 export const SUBAGENT_TOOLS = [
 	"subagent_explorer",
@@ -49,9 +51,12 @@ export const SUBAGENT_TOOLS = [
  * Allow-list for the Orchestrator root agent (installed by orchestration.mjs).
  *
  * Control plane: limited read/search/web, the user channel, task tracking,
- * child catalog, and the six delegation tools. Deliberately NO write/edit,
- * NO shell, NO job tools — the Orchestrator routes work; it does not execute
- * it. Platform-independent (no shell tool named here).
+ * child catalog, the broker report, and the six delegation tools. Deliberately
+ * NO write/edit, NO shell, NO job tools — the Orchestrator routes work; it
+ * does not execute it. Platform-independent (no shell tool named here).
+ *
+ * NOTE: keep this list in sync with ORCHESTRATOR_ALLOW in
+ * src/orchestration/orchestration.mjs (both are asserted by tests).
  */
 export const ORCHESTRATOR_ALLOW = [
 	"read",
@@ -62,6 +67,7 @@ export const ORCHESTRATOR_ALLOW = [
 	TODO_TOOL,
 	WEB_SEARCH_TOOL,
 	LIST_AGENTS_TOOL,
+	BROKER_STATUS_TOOL,
 	...SUBAGENT_TOOLS
 ];
 

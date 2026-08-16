@@ -86,9 +86,13 @@ function renderDelegationRow(specialist, persona, modelRoute) {
 		renderToolFilter(specialist)
 	];
 	if (modelRoute !== void 0) {
+		// provider/model are emitted as JSON double-quoted scalars: a model
+		// name containing `: `, `#`, `[`, or other YAML-significant characters
+		// must not be able to restructure the composition (JSON escaping is a
+		// subset of YAML double-quoted escaping, so the round-trip is exact).
 		lines.push("    agentOptions:",
-			`      provider: ${modelRoute.provider}`,
-			`      model: ${modelRoute.model}`,
+			`      provider: ${JSON.stringify(modelRoute.provider)}`,
+			`      model: ${JSON.stringify(modelRoute.model)}`,
 			`      maxTokens: ${modelRoute.maxTokens}`);
 	}
 	return lines.join("\n");
@@ -267,11 +271,15 @@ export function build() {
 	const compositionPath = join(PRESET_DIR, "agent.cordis.yml");
 	const metadataPath = join(PRESET_DIR, "preset.yml");
 	const rowPath = join(PRESET_DIR, "orchestration.mjs");
+	const brokerPath = join(PRESET_DIR, "broker.mjs");
+	const protocolPath = join(PRESET_DIR, "protocol.mjs");
 	// Dist builds never read model-routing.json; local builds do.
 	writeFileSync(compositionPath, renderComposition(ROOT, { readRoutes: mode === "local" }), "utf8");
 	writeFileSync(metadataPath, renderPresetMetadata() + "\n", "utf8");
 	copyFileSync(join(ROOT, "src", "orchestration", "orchestration.mjs"), rowPath);
-	return { written: [compositionPath, metadataPath, rowPath], mode };
+	copyFileSync(join(ROOT, "src", "orchestration", "broker.mjs"), brokerPath);
+	copyFileSync(join(ROOT, "src", "orchestration", "protocol.mjs"), protocolPath);
+	return { written: [compositionPath, metadataPath, rowPath, brokerPath, protocolPath], mode };
 }
 
 // Allow both `import { build }` (tests) and `node scripts/build.mjs`.

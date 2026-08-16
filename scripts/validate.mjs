@@ -134,6 +134,8 @@ export async function validate() {
 			rowNames.set(row.id, row);
 			const tools = TOOL_REGISTRY[row.name];
 			if (tools !== void 0) for (const tool of tools) registeredTools.add(tool);
+			// The custom orchestration row registers the broker_status tool.
+			if (row.name === "./orchestration.mjs") registeredTools.add("broker_status");
 			// Nested group rows also register tools.
 			if (Array.isArray(row.config)) {
 				for (const child of row.config) {
@@ -275,8 +277,24 @@ export async function validate() {
 		check(false, `preset.yml does not parse: ${String(error)}`);
 	}
 
-	// 7. orchestration.mjs exists in the preset dir.
+	// 7. orchestration.mjs exists in the preset dir, and the preset ships the
+	//    sibling runtime modules it imports (broker + protocol). The preset
+	//    directory has no node_modules, so these modules must only import
+	//    siblings — never bare specifiers.
 	check(existsSync(join(PRESET_DIR, "orchestration.mjs")), "preset dir missing orchestration.mjs");
+	check(existsSync(join(PRESET_DIR, "broker.mjs")), "preset dir missing broker.mjs");
+	check(existsSync(join(PRESET_DIR, "protocol.mjs")), "preset dir missing protocol.mjs");
+	const rowSource = existsSync(join(PRESET_DIR, "orchestration.mjs"))
+		? readFileSync(join(PRESET_DIR, "orchestration.mjs"), "utf8")
+		: "";
+	check(rowSource.includes('from "./broker.mjs"'), "orchestration.mjs must import ./broker.mjs");
+	const brokerSource = existsSync(join(PRESET_DIR, "broker.mjs"))
+		? readFileSync(join(PRESET_DIR, "broker.mjs"), "utf8")
+		: "";
+	check(brokerSource.includes('from "./protocol.mjs"'), "broker.mjs must import ./protocol.mjs");
+	for (const [file, source] of [["orchestration.mjs", rowSource], ["broker.mjs", brokerSource], ["protocol.mjs", existsSync(join(PRESET_DIR, "protocol.mjs")) ? readFileSync(join(PRESET_DIR, "protocol.mjs"), "utf8") : ""]]) {
+		check(!/^\s*import\s+.*\s+from\s+["'][^.]/m.test(source), `${file} must not import bare specifiers (preset dir has no node_modules)`);
+	}
 
 	if (errors.length > 0) {
 		console.error(`validate: ${errors.length} problem(s) found:`);

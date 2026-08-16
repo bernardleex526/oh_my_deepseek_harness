@@ -1,29 +1,37 @@
 /**
  * Orchestration-row runtime mechanics tests: fail-closed boundary installation
- * and the single-writer guard around write-capable (Fixer) delegations.
+ * and the broker-driven delegation chain (workspace-keyed single-writer
+ * guard, TASK_ID protocol gate, budget gates, ask-hold semantics).
  *
- * `src/orchestration/orchestration.mjs` is import-free (no DSH imports), so
- * plain node can import it directly and we drive its listeners with a minimal
- * FAKE Cordis ctx — no harness packages needed.
+ * `src/orchestration/orchestration.mjs` is import-free except for its preset
+ * siblings (`./broker.mjs`, `./protocol.mjs`), so plain node can import it
+ * directly and we drive its listeners with a minimal FAKE Cordis ctx — no
+ * harness packages needed.
  *
- * The row's guard state (`writerLocks`) is a module-scope per-caller Map and is
- * therefore shared across every `apply()` call in this file. Each test that
- * takes a writer lock MUST drive the corresponding completion/error/deny/ask
- * path to release it (or use a distinct caller key so it cannot leak into the
- * next test), leaving the module state clean. The caller key is derived from
- * `exec.agent?.id`, so `fakeExec` lets a test pick a caller; the default
- * `"unknown"` bucket keeps all caller-less calls serialized with each other and
- * is used by the shared-state tests.
+ * Lock semantics under test:
+ * - the writer lock is keyed by the caller's normalized WORKSPACE (session
+ *   cwd), falling back to the caller's agent id;
+ * - the lock is HELD through `ask` and downstream `deny` decisions (dsh-tools
+ *   does not re-run pre-execute after approval, so releasing on ask would let
+ *   an approved fixer dispatch unlocked) and released by the execute `finally`
+ *   or the post-execute settle — never stranded, never stolen by a non-owner;
+ * - a downstream pre-execute THROW still releases in the catch (that path
+ *   bypasses both execute and post-execute).
  *
  * @module multi-agent-orchestrator/tests/orchestration
  */
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { apply, ORCHESTRATOR_ALLOW } from "../src/orchestration/orchestration.mjs";
+import { apply, broker, ORCHESTRATOR_ALLOW } from "../src/orchestration/orchestration.mjs";
 
 const FIXER = "subagent_fixer";
 const EXPLORER = "subagent_explorer";
+const PROMPT = "TASK_ID: t1\nDo the thing.";
+
+// The module-level broker instance is shared across every apply() in this
+// file; reset its state between cases so tokens/budgets cannot leak.
+test.beforeEach(() => broker.reset());
 
 /** Build a fake Cordis `(exec, next)` listener to mock the `next()` delegate. */
 function makeNext(decision) {
@@ -53,6 +61,9 @@ function bootFakeCtx({ withTools = true, defineToolsUnavailable = false } = {}) 
 			restrict(filter) {
 				restricted.push(filter);
 			}
+			// NOTE: `register` is intentionally absent — the broker_status
+			// registration must degrade silently when the registry is not
+			// available on the scope.
 		};
 	}
 	const errors = [];
@@ -83,18 +94,20 @@ function bootFakeCtx({ withTools = true, defineToolsUnavailable = false } = {}) 
 }
 
 /**
- * A fake fixer exec with a stable token and an optional caller identity.
- * The caller key used by the guard is `agent?.id`, so callers map to distinct
- * locks (default: no agent → the shared `"unknown"` bucket).
+ * A fake fixer exec with a stable token, an optional caller identity, an
+ * optional session cwd (the workspace lock key), and a delegation prompt.
  * @param {string} name - the tool name.
  * @param {string} token - a stable fake registry token.
  * @param {string} [callerId] - the caller agent id (undefined → "unknown").
- * @returns {{name: string, token: string, agent?: {id: string}}}
+ * @param {{cwd?: string, prompt?: string}} [opts] - session cwd / prompt.
+ * @returns {{name: string, token: string, agent?: {id: string, session?: {header: {cwd?: string}}}, arguments: {prompt: string}}}
  */
-function fakeExec(name, token, callerId) {
-	return callerId === void 0
-		? { name, token }
-		: { name, token, agent: { id: callerId } };
+function fakeExec(name, token, callerId, { cwd, prompt = PROMPT } = {}) {
+	const base = { name, token, arguments: { prompt } };
+	if (callerId === void 0) return base;
+	const agent = { id: callerId };
+	if (cwd !== void 0) agent.session = { header: { cwd } };
+	return { ...base, agent };
 }
 
 // ── fail-closed boundary ───────────────────────────────────────────────────
@@ -129,7 +142,7 @@ test("fail-closed: when the registry is present, restrict() is called once with 
 test("single-writer: first fixer call is allowed and sets the lock", async () => {
 	const { handler } = bootFakeCtx();
 	const onPre = handler("tools/pre-execute");
-	const exec = fakeExec(FIXER, "token-A");
+	const exec = fakeExec(FIXER, "token-A", "session-A", { cwd: "C:\\proj\\app" });
 
 	const decision = await onPre(exec, makeNext({ kind: "allow" }));
 	assert.deepEqual(decision, { kind: "allow" });
@@ -139,15 +152,15 @@ test("single-writer: first fixer call is allowed and sets the lock", async () =>
 	await onExecute(exec, makeNext({ isError: false, value: 1, content: [] }));
 });
 
-test("single-writer: a second concurrent fixer call is denied", async () => {
+test("single-writer: a second concurrent fixer call on the SAME workspace is denied", async () => {
 	const { handler } = bootFakeCtx();
 	const onPre = handler("tools/pre-execute");
-	const first = fakeExec(FIXER, "token-A");
-	const second = fakeExec(FIXER, "token-B");
+	const first = fakeExec(FIXER, "token-A", "session-A", { cwd: "C:\\proj\\app" });
+	const second = fakeExec(FIXER, "token-B", "session-B", { cwd: "C:/proj/app" }); // different session, SAME workspace
 
 	// first call allowed
 	assert.equal((await onPre(first, makeNext({ kind: "allow" }))).kind, "allow");
-	// second call while the first is in flight → deny
+	// second call while the first is in flight → denied (workspace-keyed)
 	const denied = await onPre(second, makeNext({ kind: "allow" }));
 	assert.equal(denied.kind, "deny");
 	assert.match(denied.reason, /single-writer/);
@@ -155,9 +168,43 @@ test("single-writer: a second concurrent fixer call is denied", async () => {
 	// after the first completes, the gate allows again
 	const onExecute = handler("tools/execute");
 	await onExecute(first, makeNext({ isError: false, value: 1, content: [] }));
-	assert.equal((await onPre(fakeExec(FIXER, "token-C"), makeNext({ kind: "allow" }))).kind, "allow");
+	assert.equal((await onPre(fakeExec(FIXER, "token-C", "session-C", { cwd: "C:/proj/app" }), makeNext({ kind: "allow" }))).kind, "allow");
 	// cleanup
-	await onExecute(fakeExec(FIXER, "token-C"), makeNext({ isError: false, value: 1, content: [] }));
+	await onExecute(fakeExec(FIXER, "token-C", "session-C", { cwd: "C:/proj/app" }), makeNext({ isError: false, value: 1, content: [] }));
+});
+
+test("single-writer: DISJOINT workspaces never block each other (per-workspace lock)", async () => {
+	const { handler } = bootFakeCtx();
+	const onPre = handler("tools/pre-execute");
+	const onExecute = handler("tools/execute");
+
+	// Caller A locks workspace /proj/one.
+	assert.equal((await onPre(fakeExec(FIXER, "token-A", "session-A", { cwd: "/proj/one" }), makeNext({ kind: "allow" }))).kind, "allow");
+	// Caller B on a DIFFERENT workspace is allowed even while A holds its lock.
+	const b = fakeExec(FIXER, "token-B", "session-B", { cwd: "/proj/two" });
+	assert.equal((await onPre(b, makeNext({ kind: "allow" }))).kind, "allow", "different workspace must not be blocked");
+	// B completes and releases only its own key.
+	await onExecute(b, makeNext({ isError: false, value: 1, content: [] }));
+	// A's lock is untouched: a caller-A call is still denied.
+	assert.equal((await onPre(fakeExec(FIXER, "token-A2", "session-A", { cwd: "/proj/one" }), makeNext({ kind: "allow" }))).kind, "deny");
+	// A completes → its key released.
+	await onExecute(fakeExec(FIXER, "token-A", "session-A", { cwd: "/proj/one" }), makeNext({ isError: false, value: 1, content: [] }));
+	assert.equal((await onPre(fakeExec(FIXER, "token-A3", "session-A", { cwd: "/proj/one" }), makeNext({ kind: "allow" }))).kind, "allow");
+	await onExecute(fakeExec(FIXER, "token-A3", "session-A", { cwd: "/proj/one" }), makeNext({ isError: false, value: 1, content: [] }));
+});
+
+test("single-writer: without a session cwd the lock falls back to the caller id", async () => {
+	const { handler } = bootFakeCtx();
+	const onPre = handler("tools/pre-execute");
+	const onExecute = handler("tools/execute");
+
+	assert.equal((await onPre(fakeExec(FIXER, "token-A1", "session-A"), makeNext({ kind: "allow" }))).kind, "allow");
+	assert.equal((await onPre(fakeExec(FIXER, "token-A2", "session-A"), makeNext({ kind: "allow" }))).kind, "deny", "same caller id → same bucket");
+	// caller-less executions share the "unknown" bucket, independent of session-A
+	assert.equal((await onPre(fakeExec(FIXER, "token-U1"), makeNext({ kind: "allow" }))).kind, "allow", "unknown bucket is independent of session-A");
+	assert.equal((await onPre(fakeExec(FIXER, "token-U2"), makeNext({ kind: "allow" }))).kind, "deny", "unknown bucket serializes with itself");
+	await onExecute(fakeExec(FIXER, "token-U1"), makeNext({ isError: false, value: 1, content: [] }));
+	await onExecute(fakeExec(FIXER, "token-A1", "session-A"), makeNext({ isError: false, value: 1, content: [] }));
 });
 
 test("single-writer: non-fixer calls pass through and never disturb the lock", async () => {
@@ -165,8 +212,8 @@ test("single-writer: non-fixer calls pass through and never disturb the lock", a
 	const onPre = handler("tools/pre-execute");
 	const onExecute = handler("tools/execute");
 
-	const fixerA = fakeExec(FIXER, "token-A");
-	const explorer = fakeExec(EXPLORER, "token-X");
+	const fixerA = fakeExec(FIXER, "token-A", "session-A", { cwd: "/proj" });
+	const explorer = fakeExec(EXPLORER, "token-X", "session-A", { cwd: "/proj" });
 
 	// take the writer lock
 	assert.equal((await onPre(fixerA, makeNext({ kind: "allow" }))).kind, "allow");
@@ -178,14 +225,14 @@ test("single-writer: non-fixer calls pass through and never disturb the lock", a
 	await onExecute(explorer, makeNext({ isError: false, value: 1, content: [] }));
 
 	// the fixer lock is still held: a second fixer call is still denied
-	const second = await onPre(fakeExec(FIXER, "token-B"), makeNext({ kind: "allow" }));
+	const second = await onPre(fakeExec(FIXER, "token-B", "session-B", { cwd: "/proj" }), makeNext({ kind: "allow" }));
 	assert.equal(second.kind, "deny");
 
 	// releasing the fixer lock via execute now works
 	await onExecute(fixerA, makeNext({ isError: false, value: 1, content: [] }));
-	assert.equal((await onPre(fakeExec(FIXER, "token-C"), makeNext({ kind: "allow" }))).kind, "allow");
+	assert.equal((await onPre(fakeExec(FIXER, "token-C", "session-C", { cwd: "/proj" }), makeNext({ kind: "allow" }))).kind, "allow");
 	// cleanup
-	await onExecute(fakeExec(FIXER, "token-C"), makeNext({ isError: false, value: 1, content: [] }));
+	await onExecute(fakeExec(FIXER, "token-C", "session-C", { cwd: "/proj" }), makeNext({ isError: false, value: 1, content: [] }));
 });
 
 // ── single-writer guard: completion AND error clearing ─────────────────────
@@ -195,17 +242,17 @@ test("single-writer: the execute finally clears the lock on completion", async (
 	const onPre = handler("tools/pre-execute");
 	const onExecute = handler("tools/execute");
 
-	const exec = fakeExec(FIXER, "token-A");
+	const exec = fakeExec(FIXER, "token-A", "session-A", { cwd: "/proj" });
 	assert.equal((await onPre(exec, makeNext({ kind: "allow" }))).kind, "allow");
 
 	// already held → a second call denied
-	assert.equal((await onPre(fakeExec(FIXER, "token-B"), makeNext({ kind: "allow" }))).kind, "deny");
+	assert.equal((await onPre(fakeExec(FIXER, "token-B", "session-B", { cwd: "/proj" }), makeNext({ kind: "allow" }))).kind, "deny");
 
 	// completion path: execute resolves normally → finally releases
 	await onExecute(exec, makeNext({ isError: false, value: 1, content: [] }));
-	assert.equal((await onPre(fakeExec(FIXER, "token-C"), makeNext({ kind: "allow" }))).kind, "allow");
+	assert.equal((await onPre(fakeExec(FIXER, "token-C", "session-C", { cwd: "/proj" }), makeNext({ kind: "allow" }))).kind, "allow");
 	// cleanup
-	await onExecute(fakeExec(FIXER, "token-C"), makeNext({ isError: false, value: 1, content: [] }));
+	await onExecute(fakeExec(FIXER, "token-C", "session-C", { cwd: "/proj" }), makeNext({ isError: false, value: 1, content: [] }));
 });
 
 test("single-writer: the execute finally clears the lock on error path", async () => {
@@ -213,9 +260,9 @@ test("single-writer: the execute finally clears the lock on error path", async (
 	const onPre = handler("tools/pre-execute");
 	const onExecute = handler("tools/execute");
 
-	const exec = fakeExec(FIXER, "token-A");
+	const exec = fakeExec(FIXER, "token-A", "session-A", { cwd: "/proj" });
 	assert.equal((await onPre(exec, makeNext({ kind: "allow" }))).kind, "allow");
-	assert.equal((await onPre(fakeExec(FIXER, "token-B"), makeNext({ kind: "allow" }))).kind, "deny");
+	assert.equal((await onPre(fakeExec(FIXER, "token-B", "session-B", { cwd: "/proj" }), makeNext({ kind: "allow" }))).kind, "deny");
 
 	// error path: the dispatch `next()` throws → finally still releases the lock
 	await assert.rejects(
@@ -224,9 +271,9 @@ test("single-writer: the execute finally clears the lock on error path", async (
 		}),
 		/boom/
 	);
-	assert.equal((await onPre(fakeExec(FIXER, "token-C"), makeNext({ kind: "allow" }))).kind, "allow");
+	assert.equal((await onPre(fakeExec(FIXER, "token-C", "session-C", { cwd: "/proj" }), makeNext({ kind: "allow" }))).kind, "allow");
 	// cleanup
-	await onExecute(fakeExec(FIXER, "token-C"), makeNext({ isError: false, value: 1, content: [] }));
+	await onExecute(fakeExec(FIXER, "token-C", "session-C", { cwd: "/proj" }), makeNext({ isError: false, value: 1, content: [] }));
 });
 
 test("single-writer: post-execute fallback clears a lock stranded pre-dispatch", async () => {
@@ -234,7 +281,7 @@ test("single-writer: post-execute fallback clears a lock stranded pre-dispatch",
 	const onPre = handler("tools/pre-execute");
 	const onPost = handler("tools/post-execute");
 
-	const exec = fakeExec(FIXER, "token-A");
+	const exec = fakeExec(FIXER, "token-A", "session-A", { cwd: "/proj" });
 	assert.equal((await onPre(exec, makeNext({ kind: "allow" }))).kind, "allow");
 
 	// the call is cancelled between the gate and dispatch: post-execute fires
@@ -243,9 +290,9 @@ test("single-writer: post-execute fallback clears a lock stranded pre-dispatch",
 	assert.equal(postDecision.kind, "accept");
 
 	// gate is now open
-	assert.equal((await onPre(fakeExec(FIXER, "token-B"), makeNext({ kind: "allow" }))).kind, "allow");
+	assert.equal((await onPre(fakeExec(FIXER, "token-B", "session-B", { cwd: "/proj" }), makeNext({ kind: "allow" }))).kind, "allow");
 	// cleanup via execute
-	await handler("tools/execute")(fakeExec(FIXER, "token-B"), makeNext({ isError: false, value: 1, content: [] }));
+	await handler("tools/execute")(fakeExec(FIXER, "token-B", "session-B", { cwd: "/proj" }), makeNext({ isError: false, value: 1, content: [] }));
 });
 
 test("single-writer: a denied (non-owner) call's post-execute never clears another's lock", async () => {
@@ -253,24 +300,24 @@ test("single-writer: a denied (non-owner) call's post-execute never clears anoth
 	const onPre = handler("tools/pre-execute");
 	const onPost = handler("tools/post-execute");
 
-	const fixerA = fakeExec(FIXER, "token-A");
+	const fixerA = fakeExec(FIXER, "token-A", "session-A", { cwd: "/proj" });
 	assert.equal((await onPre(fixerA, makeNext({ kind: "allow" }))).kind, "allow");
 
 	// B is denied at the gate (does not own the lock), but a real pipeline
 	// would still fire its post-execute. It must NOT clear A's lock.
-	const b = fakeExec(FIXER, "token-B");
+	const b = fakeExec(FIXER, "token-B", "session-B", { cwd: "/proj" });
 	const denied = await onPre(b, makeNext({ kind: "allow" }));
 	assert.equal(denied.kind, "deny");
 	await onPost(b, { isError: true, content: [], error: { message: "denied" } }, makeNext({ kind: "accept" }));
 
 	// A's lock is still held
-	assert.equal((await onPre(fakeExec(FIXER, "token-C"), makeNext({ kind: "allow" }))).kind, "deny");
+	assert.equal((await onPre(fakeExec(FIXER, "token-C", "session-C", { cwd: "/proj" }), makeNext({ kind: "allow" }))).kind, "deny");
 
 	// A completes via execute → released
 	await handler("tools/execute")(fixerA, makeNext({ isError: false, value: 1, content: [] }));
-	assert.equal((await onPre(fakeExec(FIXER, "token-C"), makeNext({ kind: "allow" }))).kind, "allow");
+	assert.equal((await onPre(fakeExec(FIXER, "token-C", "session-C", { cwd: "/proj" }), makeNext({ kind: "allow" }))).kind, "allow");
 	// cleanup
-	await handler("tools/execute")(fakeExec(FIXER, "token-C"), makeNext({ isError: false, value: 1, content: [] }));
+	await handler("tools/execute")(fakeExec(FIXER, "token-C", "session-C", { cwd: "/proj" }), makeNext({ isError: false, value: 1, content: [] }));
 });
 
 test("single-writer: the waterfall next() is invoked exactly for allowed fixer calls", async () => {
@@ -284,56 +331,92 @@ test("single-writer: the waterfall next() is invoked exactly for allowed fixer c
 	};
 
 	// non-fixer → next called (delegation preserved)
-	await onPre(fakeExec(EXPLORER, "token-X"), tracedNext);
+	await onPre(fakeExec(EXPLORER, "token-X", "session-A", { cwd: "/proj" }), tracedNext);
 	assert.equal(nextCalls, 1, "non-fixer call must delegate to next()");
 
 	// first fixer → next called
-	await onPre(fakeExec(FIXER, "token-A"), tracedNext);
+	await onPre(fakeExec(FIXER, "token-A", "session-A", { cwd: "/proj" }), tracedNext);
 	assert.equal(nextCalls, 2, "first fixer call must delegate to next()");
 
 	// second fixer (denied) → next NOT called (short-circuit deny)
-	const denied = await onPre(fakeExec(FIXER, "token-B"), tracedNext);
+	const denied = await onPre(fakeExec(FIXER, "token-B", "session-B", { cwd: "/proj" }), tracedNext);
 	assert.equal(denied.kind, "deny");
 	assert.equal(nextCalls, 2, "denied call must not delegate to next()");
 
 	// release via execute to keep the module state clean
-	await handler("tools/execute")(fakeExec(FIXER, "token-A"), makeNext({ isError: false, value: 1, content: [] }));
+	await handler("tools/execute")(fakeExec(FIXER, "token-A", "session-A", { cwd: "/proj" }), makeNext({ isError: false, value: 1, content: [] }));
 });
 
-// ── single-writer guard: pre-execute non-dispatch releases (strand fixes) ──
+// ── single-writer guard: ask/deny HOLD the lock (approval-dispatch hole) ──
 
-test("single-writer: a downstream pre-execute DENY releases the lock", async () => {
+test("single-writer: a downstream pre-execute DENY holds the lock until post-execute", async () => {
 	const { handler } = bootFakeCtx();
 	const onPre = handler("tools/pre-execute");
+	const onPost = handler("tools/post-execute");
 	const onExecute = handler("tools/execute");
 
 	// First fixer call: the (later listener / innermost) next() decides deny.
-	const denied = await onPre(fakeExec(FIXER, "token-A"), makeNext({ kind: "deny", reason: "denied downstream" }));
+	const exec = fakeExec(FIXER, "token-A", "session-A", { cwd: "/proj" });
+	const denied = await onPre(exec, makeNext({ kind: "deny", reason: "denied downstream" }));
 	assert.equal(denied.kind, "deny");
 	assert.equal(denied.reason, "denied downstream");
 
-	// The lock must NOT have been stranded: a subsequent fixer call is allowed.
-	const second = await onPre(fakeExec(FIXER, "token-B"), makeNext({ kind: "allow" }));
-	assert.equal(second.kind, "allow", "deny at the gate must not strand the lock");
-	// cleanup so no lock leaks across tests
-	await onExecute(fakeExec(FIXER, "token-B"), makeNext({ isError: false, value: 1, content: [] }));
+	// The lock MUST still be held: approval/deny paths never re-run
+	// pre-execute, so releasing here would open a concurrent-writer window.
+	assert.equal(
+		(await onPre(fakeExec(FIXER, "token-B", "session-B", { cwd: "/proj" }), makeNext({ kind: "allow" }))).kind,
+		"deny",
+		"a denied call must not free the writer lock before post-execute"
+	);
+
+	// post-execute settles the denied call and releases the lock.
+	await onPost(exec, { isError: true, content: [], error: { message: "denied" } }, makeNext({ kind: "accept" }));
+	const third = await onPre(fakeExec(FIXER, "token-C", "session-C", { cwd: "/proj" }), makeNext({ kind: "allow" }));
+	assert.equal(third.kind, "allow", "post-execute must release the lock");
+	await onExecute(fakeExec(FIXER, "token-C", "session-C", { cwd: "/proj" }), makeNext({ isError: false, value: 1, content: [] }));
 });
 
-test("single-writer: a downstream pre-execute ASK releases the lock", async () => {
+test("single-writer: an ASK holds the lock, so an approved fixer stays serialized", async () => {
 	const { handler } = bootFakeCtx();
 	const onPre = handler("tools/pre-execute");
+	const onPost = handler("tools/post-execute");
 	const onExecute = handler("tools/execute");
 
 	// First fixer call: the downstream chain returns a pending-approval ask.
-	const asked = await onPre(fakeExec(FIXER, "token-A"), makeNext({ kind: "ask", reason: "please approve" }));
+	const exec = fakeExec(FIXER, "token-A", "session-A", { cwd: "/proj" });
+	const asked = await onPre(exec, makeNext({ kind: "ask", reason: "please approve" }));
 	assert.equal(asked.kind, "ask");
 	assert.match(asked.reason ?? "", /please approve/);
 
-	// The lock must be released: an approval that later dispatches re-takes it,
-	// and meanwhile a second independent fixer call must be allowed.
-	const second = await onPre(fakeExec(FIXER, "token-B"), makeNext({ kind: "allow" }));
-	assert.equal(second.kind, "allow", "ask at the gate must not strand the lock");
-	await onExecute(fakeExec(FIXER, "token-B"), makeNext({ isError: false, value: 1, content: [] }));
+	// CRITICAL: while the approval is pending, a second fixer must be DENIED.
+	// dsh-tools does not re-run pre-execute after the approval upgrades
+	// ask → allow (serviceAsk → dispatch), so the lock must survive the ask.
+	const second = await onPre(fakeExec(FIXER, "token-B", "session-B", { cwd: "/proj" }), makeNext({ kind: "allow" }));
+	assert.equal(second.kind, "deny", "the lock must be held through the approval window");
+
+	// Approval granted → dispatch happens (execute runs) → finally releases.
+	await onExecute(exec, makeNext({ isError: false, value: 1, content: [] }));
+
+	// Gate reopens after the approved call completes.
+	const third = await onPre(fakeExec(FIXER, "token-C", "session-C", { cwd: "/proj" }), makeNext({ kind: "allow" }));
+	assert.equal(third.kind, "allow", "gate must reopen after the approved fixer completes");
+	await onExecute(fakeExec(FIXER, "token-C", "session-C", { cwd: "/proj" }), makeNext({ isError: false, value: 1, content: [] }));
+});
+
+test("single-writer: an ask that gets CANCELLED releases via post-execute", async () => {
+	const { handler } = bootFakeCtx();
+	const onPre = handler("tools/pre-execute");
+	const onPost = handler("tools/post-execute");
+	const onExecute = handler("tools/execute");
+
+	const exec = fakeExec(FIXER, "token-A", "session-A", { cwd: "/proj" });
+	assert.equal((await onPre(exec, makeNext({ kind: "ask", reason: "approve?" }))).kind, "ask");
+	// lock held
+	assert.equal((await onPre(fakeExec(FIXER, "token-B", "session-B", { cwd: "/proj" }), makeNext({ kind: "allow" }))).kind, "deny");
+	// user cancels the approval → post-result → post-execute releases
+	await onPost(exec, { isError: true, content: [], error: { message: "approval cancelled" } }, makeNext({ kind: "accept" }));
+	assert.equal((await onPre(fakeExec(FIXER, "token-C", "session-C", { cwd: "/proj" }), makeNext({ kind: "allow" }))).kind, "allow");
+	await onExecute(fakeExec(FIXER, "token-C", "session-C", { cwd: "/proj" }), makeNext({ isError: false, value: 1, content: [] }));
 });
 
 test("single-writer: a downstream pre-execute THROW releases the lock AND rethrows", async () => {
@@ -342,69 +425,35 @@ test("single-writer: a downstream pre-execute THROW releases the lock AND rethro
 	const onExecute = handler("tools/execute");
 
 	// First fixer call: a later pre-execute listener throws → our branch must
-	// release the lock and rethrow.
+	// release the lock and rethrow (a throw bypasses execute AND post-execute).
 	await assert.rejects(
-		onPre(fakeExec(FIXER, "token-A"), throwingNext("downstream pre-execute exploded")),
+		onPre(fakeExec(FIXER, "token-A", "session-A", { cwd: "/proj" }), throwingNext("downstream pre-execute exploded")),
 		/downstream pre-execute exploded/
 	);
 
 	// Lock released → next fixer call is allowed.
-	const second = await onPre(fakeExec(FIXER, "token-B"), makeNext({ kind: "allow" }));
+	const second = await onPre(fakeExec(FIXER, "token-B", "session-B", { cwd: "/proj" }), makeNext({ kind: "allow" }));
 	assert.equal(second.kind, "allow", "throw at the gate must not strand the lock");
-	await onExecute(fakeExec(FIXER, "token-B"), makeNext({ isError: false, value: 1, content: [] }));
+	await onExecute(fakeExec(FIXER, "token-B", "session-B", { cwd: "/proj" }), makeNext({ isError: false, value: 1, content: [] }));
 });
 
-// ── single-writer guard: per-caller isolation ──────────────────────────────
+// ── TASK_ID protocol gate ───────────────────────────────────────────────────
 
-test("single-writer: cross-caller isolation — caller B is allowed while caller A holds the lock", async () => {
+test("protocol: a delegation without TASK_ID in the prompt is denied at the gate", async () => {
 	const { handler } = bootFakeCtx();
 	const onPre = handler("tools/pre-execute");
-	const onExecute = handler("tools/execute");
 
-	// Caller A takes its own lock.
-	assert.equal((await onPre(fakeExec(FIXER, "token-A1", "session-A"), makeNext({ kind: "allow" }))).kind, "allow");
-
-	// A second caller-A fixer call is denied (its key is held).
-	const a2 = await onPre(fakeExec(FIXER, "token-A2", "session-A"), makeNext({ kind: "allow" }));
-	assert.equal(a2.kind, "deny", "same-caller second call must be denied");
-
-	// Caller B (different session id) has an INDEPENDENT key → allowed.
-	const b = await onPre(fakeExec(FIXER, "token-B1", "session-B"), makeNext({ kind: "allow" }));
-	assert.equal(b.kind, "allow", "different caller must not be blocked by caller A's lock");
-
-	// B completes and releases only its own key.
-	await onExecute(fakeExec(FIXER, "token-B1", "session-B"), makeNext({ isError: false, value: 1, content: [] }));
-
-	// A's lock is untouched: a caller-A call is still denied.
-	assert.equal((await onPre(fakeExec(FIXER, "token-A3", "session-A"), makeNext({ kind: "allow" }))).kind, "deny");
-
-	// A completes → its key released.
-	await onExecute(fakeExec(FIXER, "token-A1", "session-A"), makeNext({ isError: false, value: 1, content: [] }));
-	assert.equal((await onPre(fakeExec(FIXER, "token-A4", "session-A"), makeNext({ kind: "allow" }))).kind, "allow");
-	// cleanup
-	await onExecute(fakeExec(FIXER, "token-A4", "session-A"), makeNext({ isError: false, value: 1, content: [] }));
+	const noId = await onPre(
+		fakeExec(EXPLORER, "token-X", "session-A", { prompt: "Find the auth code." }),
+		makeNext({ kind: "allow" })
+	);
+	assert.equal(noId.kind, "deny");
+	assert.match(noId.reason, /TASK_ID/);
 });
 
-test("single-writer: a non-owner caller B completion never clears caller A's lock", async () => {
+test("protocol: non-delegation tools are not subject to the TASK_ID gate", async () => {
 	const { handler } = bootFakeCtx();
 	const onPre = handler("tools/pre-execute");
-	const onExecute = handler("tools/execute");
-	const onPost = handler("tools/post-execute");
-
-	// Caller A takes its lock.
-	assert.equal((await onPre(fakeExec(FIXER, "token-A1", "session-A"), makeNext({ kind: "allow" }))).kind, "allow");
-
-	// Caller B runs a call through execute and post-execute — must NOT clear A.
-	const b = fakeExec(FIXER, "token-B1", "session-B");
-	assert.equal((await onPre(b, makeNext({ kind: "allow" }))).kind, "allow");
-	await onPost(b, { isError: false, value: 1, content: [] }, makeNext({ kind: "accept" }));
-	await onExecute(b, makeNext({ isError: false, value: 1, content: [] }));
-
-	// A's lock is still held.
-	assert.equal((await onPre(fakeExec(FIXER, "token-A2", "session-A"), makeNext({ kind: "allow" }))).kind, "deny");
-
-	// A completes → released.
-	await onExecute(fakeExec(FIXER, "token-A1", "session-A"), makeNext({ isError: false, value: 1, content: [] }));
-	assert.equal((await onPre(fakeExec(FIXER, "token-A3", "session-A"), makeNext({ kind: "allow" }))).kind, "allow");
-	await onExecute(fakeExec(FIXER, "token-A3", "session-A"), makeNext({ isError: false, value: 1, content: [] }));
+	const decision = await onPre({ name: "read", token: "token-R" }, makeNext({ kind: "allow" }));
+	assert.equal(decision.kind, "allow");
 });

@@ -83,9 +83,13 @@ commands. The request is self-contained.
 
 ## EXPECTED OUTPUT
 
-Return the standard envelope, extended with the observer fields:
+Return the standard envelope, extended with the observer fields. The FIRST
+line must echo the `TASK_ID` from your delegation prompt EXACTLY as given —
+the orchestration broker rejects envelopes whose TASK_ID is missing or
+mismatched:
 
 ```
+TASK_ID: <echo the task id from your prompt exactly>
 STATUS: SUCCESS | PARTIAL | BLOCKED | NOT_APPLICABLE
 SUMMARY:
 OBSERVED:
@@ -96,8 +100,10 @@ UNCERTAINTIES:
 RECOMMENDED_NEXT_STEP:
 ```
 
+- `TASK_ID` — the id from your delegation prompt, echoed exactly. Mandatory.
 - `OBSERVED` — exactly what happened (test output, log lines, screenshot
-  findings, console errors, network errors).
+  findings, console errors, network errors). **Required when
+  `STATUS: SUCCESS`** (mechanically enforced).
 - `EXPECTED` — the expected behavior you were told to check.
 - `DIFFERENCE` — the gap between them, or `NONE`.
 - `EVIDENCE` — raw output excerpts, file:line, reproduction steps.

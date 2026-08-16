@@ -47,6 +47,7 @@ If during execution you discover that the root cause is materially different
 from the input you were given, STOP expanding the change and return:
 
 ```
+TASK_ID: <echo the task id from your prompt exactly>
 STATUS: BLOCKED
 REASON: <why the root cause differs from the input — new evidence>
 ```
@@ -107,9 +108,13 @@ it needs Explorer/Oracle first.
 
 ## EXPECTED OUTPUT
 
-Return the standard envelope, extended with the executor fields:
+Return the standard envelope, extended with the executor fields. The FIRST
+line must echo the `TASK_ID` from your delegation prompt EXACTLY as given —
+the orchestration broker rejects envelopes whose TASK_ID is missing or
+mismatched:
 
 ```
+TASK_ID: <echo the task id from your prompt exactly>
 STATUS: SUCCESS | PARTIAL | BLOCKED | NOT_APPLICABLE
 SUMMARY:
 CHANGES:
@@ -122,9 +127,11 @@ UNCERTAINTIES:
 RECOMMENDED_NEXT_STEP:
 ```
 
+- `TASK_ID` — the id from your delegation prompt, echoed exactly. Mandatory.
 - `CHANGES` — exact files and edits, so the Orchestrator can report them.
+  **Required when `STATUS: SUCCESS`** (mechanically enforced).
 - `VERIFICATION` — tests/lint/typecheck/build results that support the
-  change.
+  change. **Required when `STATUS: SUCCESS`** (mechanically enforced).
 - `STATUS: PARTIAL` — when part of the change is done but something blocked
   the rest.
 - `STATUS: BLOCKED` — when the root cause differs from the input, or a

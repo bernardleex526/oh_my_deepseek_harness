@@ -36,6 +36,12 @@ test("real harness boot mounts the preset and enforces every boundary", async ()
 	for (const tool of SUBAGENT_TOOLS) {
 		assert.ok(result.toolNames.includes(tool), `orchestrator must see ${tool}`);
 	}
+	assert.ok(result.toolNames.includes("broker_status"), "orchestrator must see broker_status");
 	assert.ok(result.restrictionApplied, "orchestrator must be restricted (no write/edit/shell)");
 	assert.ok(result.childFilterNames > 0, "specialist filters must validate against the live registry");
+	// Real-chain probes: the broker chain (gate → execute → post-execute)
+	// must work on the actual tool pipeline, not just in unit tests.
+	assert.equal(result.probes.gateDenied, true, "concurrent fixer must be denied by the real single-writer gate");
+	assert.equal(result.probes.envelopeBlocked, true, "malformed envelope must be blocked by the real post-execute gate");
+	assert.notEqual(result.probes.askSerialized, false, "the writer lock must be held through an ask approval (or the probe skipped)");
 });

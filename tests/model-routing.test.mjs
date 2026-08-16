@@ -95,8 +95,39 @@ test("composition renders agentOptions only when routes exist", async () => {
 	try {
 		const composition = renderComposition(routed, { readRoutes: true });
 		assert.ok(composition.includes("agentOptions:"), "routed build must emit agentOptions");
-		assert.ok(composition.includes("model: deepseek-v4-flash"), "routed build must carry the route model");
+		assert.ok(composition.includes('model: "deepseek-v4-flash"'), "routed build must carry the route model as a quoted scalar");
 		assert.ok(composition.includes("maxTokens: 32768"), "routed build must carry maxTokens");
+	} finally {
+		rmSync(routed, { recursive: true, force: true });
+	}
+});
+
+test("agentOptions scalars are YAML-safe: special-char provider/model cannot restructure the composition", async () => {
+	const { createRequire } = await import("node:module");
+	const require = createRequire(import.meta.url);
+	let yaml;
+	try {
+		yaml = require(join(CHECKOUT, "..", "js-yaml"));
+	} catch {
+		yaml = require("js-yaml"); // devDependency fallback
+	}
+	// The loader's dialect: JSON_SCHEMA + the `!!js` expression type.
+	const JsExpr = new yaml.Type("tag:yaml.org,2002:js", {
+		kind: "scalar",
+		resolve: (data) => typeof data === "string",
+		construct: (data) => ({ __jsExpr: data })
+	});
+	const schema = yaml.JSON_SCHEMA.extend(JsExpr);
+
+	const nasty = { provider: "deepseek: official #v1", model: "deepseek: v4 #comment [x]", maxTokens: 8000 };
+	const routed = tempRoot({ explorer: nasty });
+	try {
+		const composition = renderComposition(routed, { readRoutes: true });
+		// Unquoted interpolation would have produced `model: deepseek: v4 #comment [x]`
+		// and broken the YAML structure; the quoted emission must round-trip.
+		const rows = yaml.load(composition, { schema });
+		const row = rows.find((r) => r.id === "tool-subagent-explorer");
+		assert.deepEqual(row.config.agentOptions, nasty, "special-char values must survive the composition round-trip");
 	} finally {
 		rmSync(routed, { recursive: true, force: true });
 	}

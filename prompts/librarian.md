@@ -74,9 +74,12 @@ so you can compare "what the project does" with "what is recommended".
 
 ## EXPECTED OUTPUT
 
-Return the standard envelope:
+Return the standard envelope. The FIRST line must echo the `TASK_ID` from
+your delegation prompt EXACTLY as given — the orchestration broker rejects
+envelopes whose TASK_ID is missing or mismatched:
 
 ```
+TASK_ID: <echo the task id from your prompt exactly>
 STATUS: SUCCESS | PARTIAL | BLOCKED | NOT_APPLICABLE
 SUMMARY:
 FINDINGS:
@@ -85,6 +88,7 @@ UNCERTAINTIES:
 RECOMMENDED_NEXT_STEP:
 ```
 
+- `TASK_ID` — the id from your delegation prompt, echoed exactly. Mandatory.
 - `EVIDENCE` — for every finding: source (URL), version, and date when
   relevant.
 - `UNCERTAINTIES` — explicitly state confidence: `OFFICIAL`, `LIKELY`,

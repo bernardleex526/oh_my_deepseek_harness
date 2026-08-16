@@ -1,5 +1,58 @@
 # 更新说明 / CHANGELOG
 
+## 2026-08-15 — 机械编排运行时（OrchestrationBroker）：写锁、预算与信封门禁接入真实执行链
+
+本轮依据审计报告（问题逐条核验见 `docs/audit-verification-and-modification.md`）实施，
+把此前"纯 prompt 纪律 + 单写者守卫"升级为**真实工具链上的机械门禁**：
+测试由 92 项增至 126 项，全部通过；validate 深度校验 17 个 DSH 包；
+smoke 新增**真实链探针**（stub 工具影子化 `subagent_fixer` 驱动真实
+`tools.execute()`），验证并发 Fixer 被拒、坏信封被 block、ask 审批期间写锁保持。
+
+### P0：单写者守卫修复（workspace 粒度 + ask 审批洞）
+
+- **锁键从 `exec.agent.id` 改为规范化 workspace**（会话 cwd，大小写折叠）：
+  两个会话打开同一项目会互相串行，不同项目互不阻塞；无 cwd 时回退到
+  caller id / "unknown" 桶。
+- **修复 ask 审批洞**：原实现在收到 `ask` 时释放锁，而 DSH 审批通过后直接
+  dispatch、**不会重跑 `tools/pre-execute`**（dsh-tools lib/index.js:3098-3130），
+  导致审批后的 Fixer 无锁执行。现在锁在 ask/deny 期间**保持持有**，由
+  execute-finally 或 post-execute 按 token 所有权释放；仅下游 pre-execute
+  throw（绕过两者）在 catch 中释放。smoke 真实链探针 `askSerialized=true`
+  验证该修复。
+
+### P0：TASK_ID 协议 + 机械预算
+
+- 新增 **TASK_ID 协议**：每次委派 prompt 首行必须声明 `TASK_ID: <id>`，
+  缺失即被 `tools/pre-execute` 机械 DENY；envelope 必须原样回显该 id。
+- 新增 **OrchestrationBroker**（`src/orchestration/broker.mjs`，进程本地、
+  无 npm 依赖，随 preset 发布）：按 (session, taskId) 机械强制
+  每任务 12 次委派上限、每 specialist 每任务 3 次尝试上限、3 次连续非
+  SUCCESS 硬停；换新 TASK_ID 即重置。
+- 新增只读 `broker_status` 工具（Orchestrator allow-list 内），可查每任务
+  预算、尝试次数、连续失败数与最近结果。
+
+### P0：envelope 结果门禁接入真实执行路径
+
+- `parseEnvelope` 升级为 **v2 多行协议**（`src/orchestration/protocol.mjs`，
+  单一事实源）：支持多行 CHANGES / VERIFICATION / SPECIFICATION / OBSERVED
+  等段；TASK_ID 必填并校验格式；重复规范段报错；REASON 等扩展段收集到
+  sections 不报错。
+- 每次委派 dispatch 后，结果文本在 `tools/post-execute` 被机械解析校验：
+  缺 STATUS / SUMMARY / TASK_ID、TASK_ID 不匹配、未知状态、SUCCESS 缺角色
+  证据段（Fixer 的 CHANGES+VERIFICATION、Observer 的 OBSERVED、Designer 的
+  SPECIFICATION）→ **block** 并附修正反馈；真实工具错误（provider 超时等）
+  原样透传但计入失败尝试。
+
+### P1：构建/安装/文档适配
+
+- `agentOptions` 的 provider/model 改为 **JSON 双引号标量发射**：含 `: `、`#`、
+  `[` 等 YAML 敏感字符的模型名不再能破坏组合结构（含回环解析测试）。
+- `install.mjs --force` 从目录合并改为**整目录替换**：旧版本删除的文件不再残留。
+- 六个 specialist 提示词与 Orchestrator 提示词全部更新：TASK_ID 回显要求、
+  机械门禁说明、budget 章节改写为"机械强制 + 分配纪律"。
+- README「限制与已知问题」如实更新：跨进程锁、artifact store、会话恢复身份
+  边界、Explorer/Observer 只读 shell 等剩余限制均已记录。
+
 ## 2026-08-14 — 发布安全、路由正确性、权限与协议全面修复
 
 本轮基于逐条核查确认的问题清单（含运行时复现与 GitHub Actions 实际运行记录）实施，

@@ -15,3 +15,5 @@ export * from "./config/schema.js";
 export * from "./permissions/agent-permissions.js";
 export * from "./routing/handoff.js";
 export * from "./routing/policy.js";
+export * from "./orchestration/broker.mjs";
+export * from "./orchestration/protocol.mjs";

@@ -71,9 +71,13 @@ gathered. The input is self-contained.
 
 ## EXPECTED OUTPUT
 
-Return the standard envelope, with a specification that Fixer can follow:
+Return the standard envelope, with a specification that Fixer can follow. The
+FIRST line must echo the `TASK_ID` from your delegation prompt EXACTLY as
+given — the orchestration broker rejects envelopes whose TASK_ID is missing
+or mismatched:
 
 ```
+TASK_ID: <echo the task id from your prompt exactly>
 STATUS: SUCCESS | PARTIAL | BLOCKED | NOT_APPLICABLE
 SUMMARY:
 FINDINGS:
@@ -93,9 +97,11 @@ UNCERTAINTIES:
 RECOMMENDED_NEXT_STEP:
 ```
 
+- `TASK_ID` — the id from your delegation prompt, echoed exactly. Mandatory.
 - `EVIDENCE` — screenshots reviewed, file:line of the components.
 - `SPECIFICATION` — explicit and complete enough that Fixer can implement
-  without making design decisions.
+  without making design decisions. **Required when `STATUS: SUCCESS`**
+  (mechanically enforced).
 - `UNCERTAINTIES` — preferences you could not determine; the Orchestrator may
   ask the user.
 - **Brevity:** your whole result (envelope included) is pruned as one block if
