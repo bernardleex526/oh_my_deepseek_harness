@@ -8,16 +8,24 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	createBroker,
 	normalizeWorkspace,
 	callerWorkspace,
 	sessionKey,
+	rootSessionKey,
 	isDelegationTool,
 	specialistId,
 	FIXER_DELEGATION,
-	DEFAULT_BUDGETS
+	DEFAULT_BUDGETS,
+	extractReceipts,
+	readBudgetsFromEnv,
+	BUDGETS_ENV
 } from "../src/orchestration/broker.mjs";
+import { createArtifactStore } from "../src/orchestration/artifacts.mjs";
 
 const FIXER = FIXER_DELEGATION;
 const EXPLORER = "subagent_explorer";
@@ -35,6 +43,13 @@ function roundTrip(broker, e, { isError = false, text = "TASK_ID: t1\nSTATUS: SU
 	if (!gate.ok) return { gate };
 	broker.markDispatched(e);
 	return { gate, settled: broker.settle(e, { text, isError }) };
+}
+
+/** A temp artifact store root (deleted after the test). */
+function tempStore(t) {
+	const root = mkdtempSync(join(tmpdir(), "mao-broker-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	return root;
 }
 
 // ── workspace normalization ────────────────────────────────────────────────
@@ -289,4 +304,168 @@ test("reset clears all broker state", () => {
 	assert.deepEqual(broker.snapshot("session-A").tasks, []);
 	assert.ok(!broker.isWriterLocked("/proj"));
 	assert.deepEqual(broker.gate(exec(FIXER, "t2", { cwd: "/proj", prompt: "TASK_ID: t1\nFix." })), { ok: true });
+});
+
+// ── P1: test receipts ──────────────────────────────────────────────────────
+
+test("extractReceipts parses <command>: <result> lines and skips headers", () => {
+	const body = [
+		"npm test: 42 passed",
+		"  npm run lint: clean",
+		"pytest tests/unit: 17 passed, 2 failed",
+		"STATUS: SUCCESS",
+		"all good"
+	].join("\n");
+	const receipts = extractReceipts(body);
+	assert.equal(receipts.length, 3);
+	assert.deepEqual(receipts[0], { command: "npm test", result: "42 passed" });
+	assert.deepEqual(receipts[1], { command: "npm run lint", result: "clean" });
+	assert.equal(receipts[2].command, "pytest tests/unit");
+	assert.deepEqual(extractReceipts(""), []);
+	assert.deepEqual(extractReceipts("no colons here"), []);
+});
+
+test("fixer SUCCESS results carry mechanically extracted receipts", () => {
+	const broker = createBroker();
+	const fix = exec(FIXER, "t1", { prompt: "TASK_ID: t1\nFix it." });
+	broker.gate(fix);
+	broker.markDispatched(fix);
+	broker.settle(fix, {
+		text: [
+			"TASK_ID: t1",
+			"STATUS: SUCCESS",
+			"SUMMARY: fixed",
+			"CHANGES:",
+			"  src/a.js: x",
+			"VERIFICATION:",
+			"  npm test: 42 passed",
+			"  pytest tests/unit: 17 passed",
+			"EVIDENCE: git diff",
+			"UNCERTAINTIES: none",
+			"RECOMMENDED_NEXT_STEP: none"
+		].join("\n"),
+		isError: false
+	});
+	const snap = broker.snapshot("session-A");
+	const result = snap.tasks[0].results[0];
+	assert.ok(Array.isArray(result.receipts));
+	assert.equal(result.receipts.length, 2);
+	assert.equal(result.receipts[0].command, "npm test");
+	assert.equal(result.receipts[0].section, "VERIFICATION");
+	assert.equal(result.receipts[1].command, "pytest tests/unit");
+});
+
+test("fixer results record before/after workspace fingerprints (null-safe)", () => {
+	const broker = createBroker();
+	const fix = exec(FIXER, "t1", { cwd: "/nonexistent-dir-xyz", prompt: "TASK_ID: t1\nFix it." });
+	broker.gate(fix);
+	broker.markDispatched(fix);
+	broker.settle(fix, { text: "TASK_ID: t1\nSTATUS: SUCCESS\nSUMMARY: ok.\nCHANGES:\n  a: b\nVERIFICATION:\n  npm test: pass", isError: false });
+	const result = broker.snapshot("session-A").tasks[0].results[0];
+	assert.ok(result.fingerprint !== void 0, "fixer records must carry a fingerprint field");
+	assert.ok("before" in result.fingerprint && "after" in result.fingerprint);
+});
+
+// ── P1: root session key (children querying broker_status) ────────────────
+
+test("rootSessionKey walks the parentSession header to the root", () => {
+	assert.equal(rootSessionKey(exec(EXPLORER, "t")), "session-A", "root agent → own id");
+	const child = { name: EXPLORER, token: "t", agent: { id: "child-1", session: { header: { parentSession: "session-A" } } } };
+	assert.equal(rootSessionKey(child), "session-A", "depth-1 child → parent id");
+	const orphan = { name: EXPLORER, token: "t", agent: { id: "orphan", session: { header: { parentSession: void 0 } } } };
+	assert.equal(rootSessionKey(orphan), "orphan");
+	assert.equal(rootSessionKey({ name: EXPLORER, token: "t" }), "unknown");
+});
+
+// ── P2: budgets from environment ───────────────────────────────────────────
+
+test("readBudgetsFromEnv parses and validates the override JSON", () => {
+	const before = process.env[BUDGETS_ENV];
+	try {
+		delete process.env[BUDGETS_ENV];
+		assert.deepEqual(readBudgetsFromEnv(), {});
+		process.env[BUDGETS_ENV] = JSON.stringify({ maxDelegationsPerTask: 20, maxConsecutiveFailures: 5 });
+		assert.deepEqual(readBudgetsFromEnv(), { maxDelegationsPerTask: 20, maxConsecutiveFailures: 5 });
+		// invalid entries are ignored; malformed JSON yields nothing
+		process.env[BUDGETS_ENV] = JSON.stringify({ maxDelegationsPerTask: -1, bogus: 3 });
+		assert.deepEqual(readBudgetsFromEnv(), {});
+		process.env[BUDGETS_ENV] = "{not json";
+		assert.deepEqual(readBudgetsFromEnv(), {});
+	} finally {
+		if (before === void 0) delete process.env[BUDGETS_ENV];
+		else process.env[BUDGETS_ENV] = before;
+	}
+});
+
+test("broker honors env-style budget overrides passed to createBroker", () => {
+	const broker = createBroker({ maxDelegationsPerTask: 1 });
+	const e = exec(EXPLORER, "t1", { prompt: "TASK_ID: t1\nA" });
+	assert.equal(broker.gate(e).ok, true);
+	broker.markDispatched(e);
+	broker.settle(e, { text: "TASK_ID: t1\nSTATUS: SUCCESS\nSUMMARY: ok.", isError: false });
+	assert.equal(broker.gate(exec(EXPLORER, "t2", { prompt: "TASK_ID: t1\nB" })).ok, false);
+	assert.match(broker.report("session-A"), /1 delegations\/task/);
+});
+
+// ── P1: persistence / crash recovery ───────────────────────────────────────
+
+test("settled attempts persist artifacts and state; a fresh broker reloads them", (t) => {
+	const root = tempStore(t);
+	const store = createArtifactStore(root);
+	const broker = createBroker({}, store);
+
+	const fix = exec(FIXER, "t1", { prompt: "TASK_ID: t1\nFix it." });
+	broker.gate(fix);
+	broker.markDispatched(fix);
+	broker.settle(fix, {
+		text: "TASK_ID: t1\nSTATUS: SUCCESS\nSUMMARY: fixed.\nCHANGES:\n  src/a.js: x\nVERIFICATION:\n  npm test: 42 passed",
+		isError: false
+	});
+	assert.equal(store.listArtifacts("session-A").length, 1, "artifact must be written");
+
+	// Simulate a process restart: a NEW broker over the SAME store.
+	const reloaded = createBroker({}, store);
+	// The reloaded broker sees the persisted budget usage and results.
+	const second = exec(FIXER, "t2", { prompt: "TASK_ID: t1\nFix more." });
+	const gate = reloaded.gate(second);
+	assert.equal(gate.ok, true, "budget not exhausted yet");
+	const snap = reloaded.snapshot("session-A");
+	assert.equal(snap.tasks[0].delegationsUsed, 1, "persisted delegation count must reload");
+	assert.equal(snap.tasks[0].results[0].status, "SUCCESS");
+	assert.equal(snap.tasks[0].results[0].receipts[0].command, "npm test");
+});
+
+test("persisted consecutive failures hard-stop a restarted task", (t) => {
+	const root = tempStore(t);
+	const store = createArtifactStore(root);
+	const broker = createBroker({ maxConsecutiveFailures: 2 }, store);
+	const mk = (token, text) => {
+		const e = exec(EXPLORER, token, { prompt: "TASK_ID: t1\nA" });
+		broker.gate(e);
+		broker.markDispatched(e);
+		broker.settle(e, { text, isError: false });
+	};
+	mk("f1", "TASK_ID: t1\nSTATUS: BLOCKED\nSUMMARY: nope.");
+	mk("f2", "TASK_ID: t1\nSTATUS: PARTIAL\nSUMMARY: partly.");
+
+	const reloaded = createBroker({ maxConsecutiveFailures: 2 }, store);
+	const gate = reloaded.gate(exec(EXPLORER, "t3", { prompt: "TASK_ID: t1\nC" }));
+	assert.equal(gate.ok, false);
+	assert.match(gate.reason, /consecutive non-SUCCESS/);
+});
+
+test("report supports taskId filtering and artifact listing", (t) => {
+	const root = tempStore(t);
+	const store = createArtifactStore(root);
+	const broker = createBroker({}, store);
+	roundTrip(broker, exec(EXPLORER, "t1", { prompt: "TASK_ID: t1\nA" }), { text: "TASK_ID: t1\nSTATUS: SUCCESS\nSUMMARY: found." });
+	roundTrip(broker, exec(EXPLORER, "t2", { prompt: "TASK_ID: t2\nB" }), { text: "TASK_ID: t2\nSTATUS: SUCCESS\nSUMMARY: found." });
+
+	const focused = broker.report("session-A", { taskId: "t2" });
+	assert.ok(focused.includes('task "t2"'));
+	assert.ok(!focused.includes('task "t1"'), "task filter must exclude other tasks");
+
+	const withArtifacts = broker.report("session-A", { taskId: "t1", includeArtifacts: true });
+	assert.match(withArtifacts, /artifacts \(1\)/);
+	assert.match(withArtifacts, /t1\/000-subagent_explorer/);
 });

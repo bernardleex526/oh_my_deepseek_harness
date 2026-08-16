@@ -47,7 +47,8 @@
  * @module multi-agent-orchestrator/orchestration
  */
 
-import { createBroker, isDelegationTool, sessionKey } from "./broker.mjs";
+import { createBroker, isDelegationTool, rootSessionKey, readBudgetsFromEnv } from "./broker.mjs";
+import { createArtifactStore } from "./artifacts.mjs";
 
 /** Delegation tool names the Orchestrator may invoke. */
 const SUBAGENT_TOOLS = [
@@ -86,10 +87,12 @@ export const name = "orchestration";
 /**
  * Process-local broker instance for this preset load.
  *
+ * Budget caps come from `$DSH_ORCHESTRATION_BUDGETS` (JSON) when set;
+ * persistence/artifacts turn on when `$DSH_ORCHESTRATION_HOME` is set.
  * Exported so tests can reset it between cases; the runtime only ever uses
  * the module singleton.
  */
-export const broker = createBroker();
+export const broker = createBroker(readBudgetsFromEnv(), createArtifactStore());
 
 /** Join the text blocks of a normalized tool result into one string. */
 function resultText(result) {
@@ -190,15 +193,25 @@ export function apply(ctx) {
 
 	// Read-only broker report tool. Registered on the standing scope so every
 	// agent composed from this preset could technically see it, but only the
-	// Orchestrator's allow-list admits it (specialist toolFilters mask it).
-	// Non-fatal if the tools registry is unavailable on this scope.
+	// Orchestrator's allow-list and the specialist filters that admit it
+	// (Fixer/Observer, for test-receipt dedupe) can call it. The report is
+	// keyed on the caller's ROOT session, so a specialist querying it sees
+	// the delegation state its delegator owns. Non-fatal if the tools
+	// registry is unavailable on this scope.
 	try {
 		const tools = ctx.get("tools");
 		if (tools?.register !== void 0) {
 			tools.register({
 				name: "broker_status",
-				description: "Read the orchestration broker state for this session: per-task delegation budgets, specialist attempt counts, consecutive failures, and the most recent specialist results.",
-				parameters: { type: "object", properties: {}, additionalProperties: false },
+				description: "Read the orchestration broker state for this session: per-task delegation budgets, specialist attempt counts, consecutive failures, test receipts (for skipping re-runs of identical commands), and optional artifact paths. Pass taskId to focus on one task, includeArtifacts to list stored artifacts.",
+				parameters: {
+					type: "object",
+					properties: {
+						taskId: { type: "string" },
+						includeArtifacts: { type: "boolean" }
+					},
+					additionalProperties: false
+				},
 				isConcurrencySafe: () => true,
 				output: {
 					schema: {
@@ -209,7 +222,12 @@ export function apply(ctx) {
 					},
 					render: (_args, value) => [{ type: "text", text: value.report }]
 				},
-				execute: (_args, exec) => ({ report: broker.report(sessionKey(exec)) })
+				execute: (args, exec) => ({
+					report: broker.report(rootSessionKey(exec), {
+						taskId: args.taskId,
+						includeArtifacts: args.includeArtifacts === true
+					})
+				})
 			});
 		}
 	} catch (error) {

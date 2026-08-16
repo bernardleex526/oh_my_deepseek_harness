@@ -49,22 +49,27 @@ test("maxDepth 1 means a specialist can never spawn another agent", () => {
 	}
 });
 
-test("orchestration.mjs is a dependency-free preset row (siblings only)", () => {
+test("orchestration.mjs is a dependency-free preset row (siblings + node builtins only)", () => {
 	assert.equal(name, "orchestration");
 	assert.equal(typeof apply, "function");
 	// The row is loaded from the preset directory where no node_modules
 	// exists, so it may only import SIBLING files of the preset dir
-	// (`./broker.mjs`, `./protocol.mjs`) — never bare specifiers or
-	// harness packages.
+	// (`./broker.mjs`, `./protocol.mjs`, `./artifacts.mjs`) and node
+	// builtins (`node:` prefix) — never bare package specifiers or harness
+	// packages.
 	const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 	const source = readFileSync(join(ROOT, "src", "orchestration", "orchestration.mjs"), "utf8");
-	assert.ok(!/^\s*import\s+.*\s+from\s+["'][^.]/m.test(source), "orchestration.mjs must not import bare specifiers");
+	assert.ok(!/^\s*import\s+.*\s+from\s+["'](?!\.|node:)/m.test(source), "orchestration.mjs must not import bare specifiers");
 	assert.match(source, /from "\.\/broker\.mjs"/, "orchestration.mjs must import ./broker.mjs");
+	assert.match(source, /from "\.\/artifacts\.mjs"/, "orchestration.mjs must import ./artifacts.mjs");
 	// The sibling modules must be equally node_modules-free.
 	const brokerSource = readFileSync(join(ROOT, "src", "orchestration", "broker.mjs"), "utf8");
 	const protocolSource = readFileSync(join(ROOT, "src", "orchestration", "protocol.mjs"), "utf8");
-	assert.ok(!/^\s*import\s+.*\s+from\s+["'][^.]/m.test(brokerSource), "broker.mjs must not import bare specifiers");
+	const artifactsSource = readFileSync(join(ROOT, "src", "orchestration", "artifacts.mjs"), "utf8");
+	assert.ok(!/^\s*import\s+.*\s+from\s+["'](?!\.|node:)/m.test(brokerSource), "broker.mjs must not import bare specifiers");
 	assert.match(brokerSource, /from "\.\/protocol\.mjs"/, "broker.mjs must import ./protocol.mjs");
+	assert.match(brokerSource, /from "\.\/artifacts\.mjs"/, "broker.mjs must import ./artifacts.mjs");
+	assert.ok(!/^\s*import\s+.*\s+from\s+["'](?!\.|node:)/m.test(artifactsSource), "artifacts.mjs must not import bare specifiers");
 	assert.ok(!/^\s*import\b/m.test(protocolSource), "protocol.mjs must be import-free");
 });
 

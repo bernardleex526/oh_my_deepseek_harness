@@ -278,12 +278,14 @@ export async function validate() {
 	}
 
 	// 7. orchestration.mjs exists in the preset dir, and the preset ships the
-	//    sibling runtime modules it imports (broker + protocol). The preset
-	//    directory has no node_modules, so these modules must only import
-	//    siblings — never bare specifiers.
+	//    sibling runtime modules it imports (broker + protocol + artifacts).
+	//    The preset directory has no node_modules, so these modules may only
+	//    import siblings and node builtins (`node:` prefix) — never bare
+	//    package specifiers.
 	check(existsSync(join(PRESET_DIR, "orchestration.mjs")), "preset dir missing orchestration.mjs");
 	check(existsSync(join(PRESET_DIR, "broker.mjs")), "preset dir missing broker.mjs");
 	check(existsSync(join(PRESET_DIR, "protocol.mjs")), "preset dir missing protocol.mjs");
+	check(existsSync(join(PRESET_DIR, "artifacts.mjs")), "preset dir missing artifacts.mjs");
 	const rowSource = existsSync(join(PRESET_DIR, "orchestration.mjs"))
 		? readFileSync(join(PRESET_DIR, "orchestration.mjs"), "utf8")
 		: "";
@@ -292,8 +294,15 @@ export async function validate() {
 		? readFileSync(join(PRESET_DIR, "broker.mjs"), "utf8")
 		: "";
 	check(brokerSource.includes('from "./protocol.mjs"'), "broker.mjs must import ./protocol.mjs");
-	for (const [file, source] of [["orchestration.mjs", rowSource], ["broker.mjs", brokerSource], ["protocol.mjs", existsSync(join(PRESET_DIR, "protocol.mjs")) ? readFileSync(join(PRESET_DIR, "protocol.mjs"), "utf8") : ""]]) {
-		check(!/^\s*import\s+.*\s+from\s+["'][^.]/m.test(source), `${file} must not import bare specifiers (preset dir has no node_modules)`);
+	check(brokerSource.includes('from "./artifacts.mjs"'), "broker.mjs must import ./artifacts.mjs");
+	const moduleFiles = [
+		["orchestration.mjs", rowSource],
+		["broker.mjs", brokerSource],
+		["protocol.mjs", existsSync(join(PRESET_DIR, "protocol.mjs")) ? readFileSync(join(PRESET_DIR, "protocol.mjs"), "utf8") : ""],
+		["artifacts.mjs", existsSync(join(PRESET_DIR, "artifacts.mjs")) ? readFileSync(join(PRESET_DIR, "artifacts.mjs"), "utf8") : ""]
+	];
+	for (const [file, source] of moduleFiles) {
+		check(!/^\s*import\s+.*\s+from\s+["'](?!\.|node:)/m.test(source), `${file} must only import siblings and node builtins (preset dir has no node_modules)`);
 	}
 
 	if (errors.length > 0) {

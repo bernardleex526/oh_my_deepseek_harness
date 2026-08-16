@@ -74,10 +74,10 @@
       | --- | --- | --- | --- |
       | explorer | 静态仓库事实：文件、符号、调用关系、结构与已有模式 | `subagent_explorer` | read, read_image, grep, glob, bash|pwsh |
       | librarian | 外部知识：官方文档、第三方库、API、版本与标准 | `subagent_librarian` | web_search |
-      | observer | 运行事实：测试输出、日志、截图、UI 与运行时行为 | `subagent_observer` | read, read_image, grep, glob, bash|pwsh, web_search, job_list, job_output, job_kill |
+      | observer | 运行事实：测试输出、日志、截图、UI 与运行时行为 | `subagent_observer` | read, read_image, grep, glob, bash|pwsh, web_search, job_list, job_output, job_kill, broker_status |
       | oracle | 深度技术推理：根因、架构权衡、并发、安全、性能 | `subagent_oracle` | read, read_image, grep, glob, web_search |
       | designer | 视觉与交互判断：UI/UX、布局、可访问性、规范输出 | `subagent_designer` | read, read_image, grep, glob, web_search |
-      | fixer | 执行修改：按明确目标实现、重构、修复并做局部验证 | `subagent_fixer` | read, read_image, write, edit, grep, glob, bash|pwsh, web_search, todo_write, job_list, job_output, job_kill |
+      | fixer | 执行修改：按明确目标实现、重构、修复并做局部验证 | `subagent_fixer` | read, read_image, write, edit, grep, glob, bash|pwsh, web_search, todo_write, job_list, job_output, job_kill, broker_status |
 
       ## DELEGATION TOOLS
 
@@ -113,7 +113,9 @@
         to proceed, or whether another specialist (possibly a different one) is
         needed.
       - You can inspect the mechanical per-task state (budgets used, attempts,
-        consecutive failures, recent results) at any time with `broker_status`.
+        consecutive failures, test receipts, stored artifacts) at any time with
+        `broker_status` — pass `taskId` to focus on one task and
+        `includeArtifacts: true` to list persisted result artifacts.
 
       ## ROUTING POLICY
 
@@ -397,7 +399,7 @@
 - id: tool-subagent-list-agents
   name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
 
-# ── delegation: the six specialists ─────────────────────────────────
+# ── delegation: the builtin specialists (+ custom roles in local builds) ──
 
 - id: tool-subagent-explorer
   name: '@deepseek-ai/dsh-tool-subagent'
@@ -778,11 +780,18 @@
           - `TASK_ID` — the id from your delegation prompt, echoed exactly. Mandatory.
           - `OBSERVED` — exactly what happened (test output, log lines, screenshot
             findings, console errors, network errors). **Required when
-            `STATUS: SUCCESS`** (mechanically enforced).
+            `STATUS: SUCCESS`** (mechanically enforced). Format each command result as
+            `<command>: <result>` on its own line so the broker can extract it as a
+            test receipt.
           - `EXPECTED` — the expected behavior you were told to check.
           - `DIFFERENCE` — the gap between them, or `NONE`.
           - `EVIDENCE` — raw output excerpts, file:line, reproduction steps.
           - `REPRODUCTION` — include whether the issue reproduces and how.
+          - **Dedupe:** before re-running a command, call `broker_status` with
+            `taskId: <your TASK_ID>`. If an identical command already has a receipt on
+            this task and nothing relevant changed, cite it instead of re-running
+            (`OBSERVED` line: `npm test: already verified (receipt #2)`). The same
+            pytest suite should not run twice for one change.
           - **Brevity:** your whole result (envelope included) is pruned as one block if
             it grows too long — there is no field-exclusion, so keep the envelope and
             its `SUMMARY` FIRST and inside the head window. In `EVIDENCE` and `OBSERVED`
@@ -805,7 +814,7 @@
           - the request is not a runtime-observation task (return `NOT_APPLICABLE`).
 
     toolFilter:
-      allow: !!js "process.platform === 'win32' ? [\"read\",\"read_image\",\"grep\",\"glob\",\"pwsh\",\"web_search\",\"job_list\",\"job_output\",\"job_kill\"] : [\"read\",\"read_image\",\"grep\",\"glob\",\"bash\",\"web_search\",\"job_list\",\"job_output\",\"job_kill\"]"
+      allow: !!js "process.platform === 'win32' ? [\"read\",\"read_image\",\"grep\",\"glob\",\"pwsh\",\"web_search\",\"job_list\",\"job_output\",\"job_kill\",\"broker_status\"] : [\"read\",\"read_image\",\"grep\",\"glob\",\"bash\",\"web_search\",\"job_list\",\"job_output\",\"job_kill\",\"broker_status\"]"
 
 - id: tool-subagent-oracle
   name: '@deepseek-ai/dsh-tool-subagent'
@@ -1225,13 +1234,28 @@
           - `CHANGES` — exact files and edits, so the Orchestrator can report them.
             **Required when `STATUS: SUCCESS`** (mechanically enforced).
           - `VERIFICATION` — tests/lint/typecheck/build results that support the
-            change. **Required when `STATUS: SUCCESS`** (mechanically enforced).
+            change. **Required when `STATUS: SUCCESS`** (mechanically enforced). Format
+            each result as `<command>: <result>` on its own line so the broker can
+            extract it as a test receipt.
           - `STATUS: PARTIAL` — when part of the change is done but something blocked
             the rest.
           - `STATUS: BLOCKED` — when the root cause differs from the input, or a
             user-owned choice is needed, or the scope would have to widen. Whenever you
             return `STATUS: BLOCKED`, add a `REASON:` line (free text) inside the
             envelope describing exactly what blocked you.
+
+          ## TEST RECEIPTS & DEDUPE
+
+          - Before running a test/lint/typecheck/build command, call `broker_status`
+            with `taskId: <your TASK_ID>`. It reports the receipts already recorded for
+            this task (command + result).
+          - If an IDENTICAL command already has a successful receipt on this task and
+            you have not changed the relevant files since, DO NOT re-run it: cite the
+            existing receipt in `VERIFICATION` instead (e.g.
+            `npm test: already verified (receipt #2)`). Re-running identical commands
+            wastes budget and time.
+          - Changed relevant files → the old receipt is stale → re-run and record a new
+            receipt.
 
           ## BREVITY
 
@@ -1280,7 +1304,7 @@
             `NOT_APPLICABLE`).
 
     toolFilter:
-      allow: !!js "process.platform === 'win32' ? [\"read\",\"read_image\",\"write\",\"edit\",\"grep\",\"glob\",\"pwsh\",\"web_search\",\"todo_write\",\"job_list\",\"job_output\",\"job_kill\"] : [\"read\",\"read_image\",\"write\",\"edit\",\"grep\",\"glob\",\"bash\",\"web_search\",\"todo_write\",\"job_list\",\"job_output\",\"job_kill\"]"
+      allow: !!js "process.platform === 'win32' ? [\"read\",\"read_image\",\"write\",\"edit\",\"grep\",\"glob\",\"pwsh\",\"web_search\",\"todo_write\",\"job_list\",\"job_output\",\"job_kill\",\"broker_status\"] : [\"read\",\"read_image\",\"write\",\"edit\",\"grep\",\"glob\",\"bash\",\"web_search\",\"todo_write\",\"job_list\",\"job_output\",\"job_kill\",\"broker_status\"]"
 
 # ── control-plane boundary ──────────────────────────────────────────
 

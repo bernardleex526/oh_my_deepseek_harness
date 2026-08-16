@@ -31,10 +31,12 @@ export const MODEL_ROUTING_FILE = "model-routing.json";
 /**
  * Load per-specialist model routes.
  * @param {string} root - project root directory.
+ * @param {string[]} [extraIds] - additional known specialist ids (custom
+ *   roles registered via roles.json) so their routes validate too.
  * @returns {Record<string, {provider: string, model: string, maxTokens: number}>}
  *   routes keyed by specialist id; empty when no file exists.
  */
-export function loadModelRouting(root) {
+export function loadModelRouting(root, extraIds = []) {
 	const path = join(root, MODEL_ROUTING_FILE);
 	if (!existsSync(path)) return {};
 	let parsed;
@@ -46,10 +48,11 @@ export function loadModelRouting(root) {
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		throw new Error(`model-routing: ${MODEL_ROUTING_FILE} must be a JSON object keyed by specialist id`);
 	}
+	const known = new Set([...SPECIALIST_IDS, ...extraIds]);
 	const routes = {};
 	for (const [id, value] of Object.entries(parsed)) {
-		if (!SPECIALIST_IDS.includes(id)) {
-			throw new Error(`model-routing: unknown specialist "${id}" (known: ${SPECIALIST_IDS.join(", ")})`);
+		if (!known.has(id)) {
+			throw new Error(`model-routing: unknown specialist "${id}" (known: ${[...known].join(", ")})`);
 		}
 		assertAgentOptions(value, `model-routing:${id}`);
 		routes[id] = { ...value };

@@ -3,7 +3,8 @@
 - 审计快照：`bernardleex526/oh_my_deepseek_harness@6a252cd`（main）
 - 核验/修改环境：Windows 11 + Node 24.16，DSH `@deepseek-ai/dsh@0.1.0-rc.6`
   真实安装（`C:\Users\bernard\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh`）
-- 修改后：测试 **126/126 通过**（原 92），`validate` OK，`smoke` 真实链探针全绿
+- 修改后：测试 **150/150 通过**（原 92；P0 轮 126，P1/P2 轮 +24），`validate`
+  OK，`smoke` 真实链探针全绿（`docs/` 附录 A 记录 P1/P2 轮）
 
 ---
 
@@ -147,3 +148,67 @@ npm run smoke   → OK — 15 tools（含 broker_status）
 6. Explorer/Observer 的只读 shell 仍是 prompt 纪律（宿主权限层限制）；
 7. CI 不跑真实模型回合（无 stub LLM provider）；
 8. TASK_ID 是任务边界的机械近似，id 分配纪律仍需 prompt 约束。
+
+---
+
+# 附录 A：P1/P2 实施记录（2026-08-16）
+
+## 本轮核验/决策
+
+- **P1 全项评估**：ArtifactStore ✅ 实施；崩溃恢复/任务 replay ✅ 实施（会话
+  状态落盘 + 惰性重载）；workspace fingerprint ✅ 实施（git best-effort）；
+  测试 receipt ✅ 实施（机械提取 + `broker_status` 去重查询）；审查失败闭环
+  ——仍为 prompt 流程（Oracle 复审步骤），本轮未加机械层；隔离 worktree /
+  journal 回滚——需拦截子代理内部写操作（宿主权限模型不支持），记录为未实施。
+- **P2 全项评估**：自定义角色注册 ✅ 实施（构建期 roles.json，宿主无运行时
+  角色注册 API）；预算配置 ✅ 实施（`$DSH_ORCHESTRATION_BUDGETS`）；运行状态
+  面板——以 CLI（status/metrics）+ `broker_status` 工具近似 ✅，Web 面板需
+  宿主 client 插件，记录为未实施；动态模型选择——宿主在 spawn 时解析
+  `agentOptions`，运行期切换无 API，记录为未实施（构建期静态路由可用）；
+  token/pytest 时间预算——宿主无 token 计量 API，pytest 时间需 shell 观测，
+  记录为未实施（receipt 机制已覆盖"不重复跑"的一半目标）。
+
+## 文件级变更
+
+| 文件 | 变更 |
+|---|---|
+| `src/orchestration/artifacts.mjs`（新） | ArtifactStore：`writeArtifact`/`writeSessionState`/`readSessionState`/`listArtifacts`/`listSessions`/`contentHash`；仅 `$DSH_ORCHESTRATION_HOME` 启用；CLI 用 `cliStoreRoot` |
+| `src/orchestration/broker.mjs` | store 注入与落盘（settle 后写 artifact + 会话状态）、首访惰性重载（崩溃恢复）、`extractReceipts`（VERIFICATION/OBSERVED 的 `<command>: <result>`）、fixer before/after `gitFingerprint`、`rootSessionKey`（子代理查 root 状态）、`readBudgetsFromEnv`、report 的 taskId/includeArtifacts 参数 |
+| `src/orchestration/orchestration.mjs` | broker 构造接入 env 预算与 store；`broker_status` 参数升级（taskId/includeArtifacts），execute 按 `rootSessionKey` 出报告 |
+| `src/permissions/agent-permissions.js` | 新增 `broker` 权限标志 → Fixer/Observer 过滤器含 `broker_status`（其余角色不可见） |
+| `src/config/roles.js`（新） | 自定义角色：`loadCustomRoles`/`customSpecialist`，严格校验（snake id、角色词表、权限键/类型、内置冲突） |
+| `src/config/model-routing.js` | `loadModelRouting(root, extraIds)` 支持自定义角色路由 |
+| `src/config/schema.js` | `assertAgentDefinition` 的 id 校验改按 TOOL_NAME（委派工具名是宿主侧标识） |
+| `scripts/build.mjs` | 复制 `artifacts.mjs` 进 preset；本地模式合并 roles.json（persona 追加 CUSTOM SPECIALISTS 段、按项目根解析自定义 persona 文件）；模型路由传入自定义 id |
+| `scripts/validate.mjs` | 校验 artifacts.mjs 存在与相对导入；裸导入规则放宽为"兄弟文件 + `node:` 内置" |
+| `scripts/orchestration-status.mjs`（新） | P2 状态 CLI（会话列表 / 单会话详情，支持 `--home`） |
+| `scripts/orchestration-metrics.mjs`（新） | P2 指标 CLI（跨会话质量聚合，支持 `--home`） |
+| `scripts/smoke-mount.mjs` | 子代理过滤器校验改用 standing **visible** 面（restrictableNames 只含宿主全局工具）；smokeMount finally 保证释放 harness fiber |
+| `prompts/fixer.md` | TEST RECEIPTS & DEDUPE 小节：先查 `broker_status` 再决定是否重跑相同命令 |
+| `prompts/observer.md` | 同样的 dedupe 说明；OBSERVED 按 `<command>: <result>` 格式输出 |
+| `prompts/orchestrator.md` | `broker_status` 参数说明（taskId/includeArtifacts） |
+| `tests/artifacts.test.mjs`（新） | 存储 CRUD、启用语义、损坏降级、会话枚举 |
+| `tests/roles.test.mjs`（新） | 角色加载/校验/冲突、dist 不读 local 合并、隔离配置一致 |
+| `tests/broker.test.mjs` | +receipts、+fingerprint、+rootSessionKey、+预算 env、+持久化重载、+report 过滤/artifacts |
+| `tests/permissions.test.mjs` | REGISTERED 含 broker_status；Fixer/Observer 可查 broker_status 断言 |
+| `tests/delegation.test.mjs` | 导入规则断言放宽（允许 `node:` 前缀） |
+| `package.json` | `status`/`metrics` scripts |
+| README / CHANGELOG / 本文档 | 同步更新 |
+
+## 验证
+
+```
+npm test        → 150/150 通过（原 126）
+npm run build   → 产物含 artifacts.mjs；REPRO 可复现
+npm run validate→ OK（19 rows，17 packages deep-checked）
+npm run smoke   → 15 tools；gateDenied=true envelopeBlocked=true askSerialized=true
+npm run status  → 会话列表/详情（含 receipts、fingerprint、artifacts）✅ 实测
+npm run metrics → 质量聚合 ✅ 实测
+build:local     → roles.json + model-routing.json 端到端合并 ✅ 实测（引号安全路由）
+```
+
+## 新增的剩余限制（本轮后）
+
+- 动态模型选择、Web 运行面板、token/pytest 时间预算：宿主能力边界，未实施；
+- 审查失败闭环与隔离 worktree/journal 回滚：仍需宿主级支持，未实施；
+- 对话内 pruner 裁剪依旧（完整原文已由 ArtifactStore 保存，可回看）。

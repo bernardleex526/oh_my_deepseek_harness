@@ -11,7 +11,12 @@
 /** A delegation tool name must be a lowercase snake identifier. */
 export const TOOL_NAME = /^[a-z][a-z0-9_]*$/;
 
-/** A preset/agent id must match the harness preset-id rule. */
+/**
+ * A preset/agent id must match the harness preset-id rule. (Specialist
+ * catalog ids are validated against TOOL_NAME instead — the delegation tool
+ * name `subagent_<id>` is the harness-facing identifier, and snake ids keep
+ * it registerable.)
+ */
 export const AGENT_ID = /^[a-z0-9][a-z0-9-]*$/;
 
 /**
@@ -28,8 +33,8 @@ export function assertAgentDefinition(value, label = "agent") {
 	for (const key of required) {
 		if (!(key in value)) throw new TypeError(`${label}: missing required field "${key}"`);
 	}
-	if (typeof value.id !== "string" || !AGENT_ID.test(value.id)) {
-		throw new TypeError(`${label}: id must match ${String(AGENT_ID)}`);
+	if (typeof value.id !== "string" || !TOOL_NAME.test(value.id)) {
+		throw new TypeError(`${label}: id must be lowercase snake_case (the delegation tool name is "subagent_<id>")`);
 	}
 	if (typeof value.toolName !== "string" || !TOOL_NAME.test(value.toolName)) {
 		throw new TypeError(`${label}: toolName must match ${String(TOOL_NAME)}`);

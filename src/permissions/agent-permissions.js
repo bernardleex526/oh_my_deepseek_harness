@@ -82,6 +82,8 @@ export const ORCHESTRATOR_ALLOW = [
  * @param {boolean} [spec.todo] - admit todo_write.
  * @param {boolean} [spec.jobs] - admit job_* tools.
  * @param {boolean} [spec.askUser] - admit ask_user_question.
+ * @param {boolean} [spec.broker] - admit broker_status (read-only report:
+ *   lets Fixer/Observer query earlier test receipts and skip re-runs).
  * @param {string} [platform] - platform to resolve shell for (tests).
  * @returns {{allow: string[]}} the toolFilter for the delegation tool.
  */
@@ -94,6 +96,7 @@ export function specialistFilter(spec, platform = process.platform) {
 	if (spec.todo) allow.push(TODO_TOOL);
 	if (spec.jobs) allow.push(...JOB_TOOLS);
 	if (spec.askUser) allow.push(ASK_USER_TOOL);
+	if (spec.broker) allow.push(BROKER_STATUS_TOOL);
 	return { allow };
 }
 
@@ -103,19 +106,22 @@ export function specialistFilter(spec, platform = process.platform) {
  * Mapping to the design-doc permission table (§19), adapted to the tools this
  * preset registers:
  *
- * | Agent     | Read | Search | Web | Shell | Edit | Jobs | Ask |
- * |-----------|------|--------|-----|-------|------|------|-----|
- * | Explorer  | fs   | search | no  | ro*   | no   | no   | no  |
- * | Librarian | no   | no     | yes | no    | no   | no   | no  |
- * | Observer  | fs   | search | lim | yes*  | no   | yes  | no  |
- * | Oracle    | ro   | search | lim | no    | no   | no   | no  |
- * | Designer  | ro   | search | lim | no    | no   | no   | no  |
- * | Fixer     | fs   | search | lim | yes   | yes  | yes  | no  |
+ * | Agent     | Read | Search | Web | Shell | Edit | Jobs | Ask | Broker |
+ * |-----------|------|--------|-----|-------|------|------|-----|--------|
+ * | Explorer  | fs   | search | no  | ro*   | no   | no   | no  | no     |
+ * | Librarian | no   | no     | yes | no    | no    | no   | no  | no     |
+ * | Observer  | fs   | search | lim | yes*  | no    | yes  | no  | yes    |
+ * | Oracle    | ro   | search | lim | no    | no    | no   | no  | no     |
+ * | Designer  | ro   | search | lim | no    | no    | no   | no  | no     |
+ * | Fixer     | fs   | search | lim | yes   | yes   | yes  | no  | yes    |
  *
  * *Explorer's and Observer's shell access is read-only by prompt discipline
  * only; DSH cannot express a read-only shell at the permission layer, so their
  * prompts hard-restrict shell use to non-mutating (observational) commands.
  * Design/decision makers (Oracle, Designer) have no shell at all.
+ * Fixer/Observer additionally get the read-only `broker_status` report so
+ * they can query earlier test receipts and avoid re-running identical
+ * commands (P1 test-run dedupe).
  *
  * @type {Record<string, object>}
  */
@@ -135,7 +141,8 @@ export const SPECIALIST_PERMISSIONS = {
 		search: SEARCH_TOOLS,
 		shell: true,
 		web: true,
-		jobs: true
+		jobs: true,
+		broker: true
 	},
 	oracle: {
 		read: ["read", "read_image"],
@@ -155,7 +162,8 @@ export const SPECIALIST_PERMISSIONS = {
 		shell: true,
 		web: true,
 		todo: true,
-		jobs: true
+		jobs: true,
+		broker: true
 	}
 };
 

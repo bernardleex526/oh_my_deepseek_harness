@@ -103,11 +103,18 @@ RECOMMENDED_NEXT_STEP:
 - `TASK_ID` — the id from your delegation prompt, echoed exactly. Mandatory.
 - `OBSERVED` — exactly what happened (test output, log lines, screenshot
   findings, console errors, network errors). **Required when
-  `STATUS: SUCCESS`** (mechanically enforced).
+  `STATUS: SUCCESS`** (mechanically enforced). Format each command result as
+  `<command>: <result>` on its own line so the broker can extract it as a
+  test receipt.
 - `EXPECTED` — the expected behavior you were told to check.
 - `DIFFERENCE` — the gap between them, or `NONE`.
 - `EVIDENCE` — raw output excerpts, file:line, reproduction steps.
 - `REPRODUCTION` — include whether the issue reproduces and how.
+- **Dedupe:** before re-running a command, call `broker_status` with
+  `taskId: <your TASK_ID>`. If an identical command already has a receipt on
+  this task and nothing relevant changed, cite it instead of re-running
+  (`OBSERVED` line: `npm test: already verified (receipt #2)`). The same
+  pytest suite should not run twice for one change.
 - **Brevity:** your whole result (envelope included) is pruned as one block if
   it grows too long — there is no field-exclusion, so keep the envelope and
   its `SUMMARY` FIRST and inside the head window. In `EVIDENCE` and `OBSERVED`

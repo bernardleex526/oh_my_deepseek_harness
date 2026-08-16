@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { SPECIALISTS } from "../src/agents/catalog.js";
 import { AGENT_INSTRUCTIONS_MAX_BYTES, PRESET_ID, PRESET_METADATA } from "../src/config/defaults.js";
 import { loadModelRouting } from "../src/config/model-routing.js";
+import { loadCustomRoles } from "../src/config/roles.js";
 import { loadOrchestratorPersona, loadSpecialistPersona } from "../src/config/loader.js";
 import { shellTool } from "../src/permissions/agent-permissions.js";
 import { assertAgentDefinition } from "../src/config/schema.js";
@@ -115,15 +116,23 @@ export function buildMode() {
 /**
  * Compose the full agent.cordis.yml text.
  * @param {string} [root] - project root directory.
- * @param {{readRoutes?: boolean}} [options] - if `readRoutes` is true the
- *   composition calls `loadModelRouting(root)` (local mode); defaults to
- *   false so the default composition is the dist build (never emits
- *   agentOptions lines, even if model-routing.json is present locally).
+ * @param {{readRoutes?: boolean, readRoles?: boolean}} [options] - if
+ *   `readRoutes` is true the composition calls `loadModelRouting(root)` and
+ *   if `readRoles` is true it calls `loadCustomRoles(root)` (both local
+ *   mode); defaults to false so the default composition is the dist build
+ *   (never emits agentOptions lines nor custom rows, even if
+ *   model-routing.json / roles.json are present locally).
  * @returns {string} the composition YAML.
  */
-export function renderComposition(root = ROOT, { readRoutes = false } = {}) {
-	const orchestratorPersona = loadOrchestratorPersona(ROOT);
-	const modelRoutes = readRoutes ? loadModelRouting(root) : {};
+export function renderComposition(root = ROOT, { readRoutes = false, readRoles = false } = {}) {
+	const customRoles = readRoles ? loadCustomRoles(root) : [];
+	const modelRoutes = readRoutes ? loadModelRouting(root, customRoles.map((s) => s.id)) : {};
+	const specialists = readRoles ? [...SPECIALISTS, ...customRoles] : SPECIALISTS;
+	let orchestratorPersona = loadOrchestratorPersona(ROOT);
+	if (customRoles.length > 0) {
+		const roster = customRoles.map((s) => `- \`${s.toolName}\` — ${s.description}`).join("\n");
+		orchestratorPersona += `\n\n## CUSTOM SPECIALISTS\n\nThis build registers ${customRoles.length} additional custom specialist(s). Use them exactly like the builtin delegation tools (same TASK_ID protocol, same envelope, same budgets):\n\n${roster}\n`;
+	}
 	const rows = [];
 	rows.push("# The `orchestrator` agent preset: multi-agent orchestration mode.");
 	rows.push("#");
@@ -195,10 +204,12 @@ export function renderComposition(root = ROOT, { readRoutes = false } = {}) {
 	rows.push("- id: tool-subagent-list-agents");
 	rows.push("  name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'");
 	rows.push("");
-	rows.push("# ── delegation: the six specialists ─────────────────────────────────");
+	rows.push("# ── delegation: the builtin specialists (+ custom roles in local builds) ──");
 	rows.push("");
-	for (const specialist of SPECIALISTS) {
-		const persona = loadSpecialistPersona(ROOT, specialist);
+	for (const specialist of specialists) {
+		// Builtin personas resolve from the package root; custom roles'
+		// personaFile is relative to the project root (where roles.json lives).
+		const persona = loadSpecialistPersona(SPECIALISTS.includes(specialist) ? ROOT : root, specialist);
 		const modelRoute = modelRoutes[specialist.id];
 		rows.push(renderDelegationRow(specialist, persona, modelRoute));
 		rows.push("");
@@ -267,19 +278,26 @@ export function build() {
 	for (const specialist of SPECIALISTS) {
 		assertAgentDefinition(specialist, `specialist:${specialist.id}`);
 	}
+	if (mode === "local") {
+		// Local builds validate custom roles too (roles.js already asserts
+		// each definition; the merge is exercised end to end here).
+		loadCustomRoles(ROOT);
+	}
 	mkdirSync(PRESET_DIR, { recursive: true });
 	const compositionPath = join(PRESET_DIR, "agent.cordis.yml");
 	const metadataPath = join(PRESET_DIR, "preset.yml");
 	const rowPath = join(PRESET_DIR, "orchestration.mjs");
 	const brokerPath = join(PRESET_DIR, "broker.mjs");
 	const protocolPath = join(PRESET_DIR, "protocol.mjs");
-	// Dist builds never read model-routing.json; local builds do.
-	writeFileSync(compositionPath, renderComposition(ROOT, { readRoutes: mode === "local" }), "utf8");
+	const artifactsPath = join(PRESET_DIR, "artifacts.mjs");
+	// Dist builds never read model-routing.json/roles.json; local builds do.
+	writeFileSync(compositionPath, renderComposition(ROOT, { readRoutes: mode === "local", readRoles: mode === "local" }), "utf8");
 	writeFileSync(metadataPath, renderPresetMetadata() + "\n", "utf8");
 	copyFileSync(join(ROOT, "src", "orchestration", "orchestration.mjs"), rowPath);
 	copyFileSync(join(ROOT, "src", "orchestration", "broker.mjs"), brokerPath);
 	copyFileSync(join(ROOT, "src", "orchestration", "protocol.mjs"), protocolPath);
-	return { written: [compositionPath, metadataPath, rowPath, brokerPath, protocolPath], mode };
+	copyFileSync(join(ROOT, "src", "orchestration", "artifacts.mjs"), artifactsPath);
+	return { written: [compositionPath, metadataPath, rowPath, brokerPath, protocolPath, artifactsPath], mode };
 }
 
 // Allow both `import { build }` (tests) and `node scripts/build.mjs`.

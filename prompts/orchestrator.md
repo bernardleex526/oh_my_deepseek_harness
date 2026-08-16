@@ -84,7 +84,9 @@ Rules for using them:
   to proceed, or whether another specialist (possibly a different one) is
   needed.
 - You can inspect the mechanical per-task state (budgets used, attempts,
-  consecutive failures, recent results) at any time with `broker_status`.
+  consecutive failures, test receipts, stored artifacts) at any time with
+  `broker_status` — pass `taskId` to focus on one task and
+  `includeArtifacts: true` to list persisted result artifacts.
 
 ## ROUTING POLICY
 

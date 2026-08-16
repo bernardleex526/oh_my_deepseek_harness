@@ -1,5 +1,54 @@
 # 更新说明 / CHANGELOG
 
+## 2026-08-16 — P1/P2：ArtifactStore 持久化、测试 receipt 去重、自定义角色、状态/指标 CLI
+
+在机械编排运行时之上继续实施审计报告的 P1/P2 项。测试由 126 项增至
+150 项，全部通过；validate 与 smoke 真实链探针保持全绿。
+
+### P1：持久化 / 崩溃恢复 / 任务 replay（可选开启）
+
+- 新增 **ArtifactStore**（`src/orchestration/artifacts.mjs`，随 preset 发布，
+  仅 node 内置模块）：设置 `$DSH_ORCHESTRATION_HOME` 后，每次委派的结果
+  全文与解析元数据落到 `<root>/artifacts/<session>/<taskId>/…`（含内容
+  hash），会话状态（预算、结果、receipts、fingerprint）落到
+  `<root>/state/<session>.json`。
+- **崩溃恢复**：broker 首次访问某会话时自动从磁盘重载状态——进程重启后
+  预算计数、连续失败硬停、完整结果历史原样恢复（`tests/broker.test.mjs`
+  有跨实例重载测试）。
+- **workspace fingerprint**：Fixer 每次运行记录 before/after 的 git 指纹
+  （HEAD + porcelain 状态哈希，best-effort，失败为 null），为 keep-vs-revert
+  决策提供机械证据。
+- **测试 receipt**：从 Fixer 的 VERIFICATION / Observer 的 OBSERVED 机械提取
+  `<command>: <result>` 行；`broker_status` 新增 `taskId` 参数，Fixer/Observer
+  （过滤器新增只读 `broker_status`）可先查既有 receipt 再决定是否重跑相同
+  命令（同一 pytest 套件不再跑两遍，prompt 纪律 + 机械记录双轨）。
+- `broker_status` 新增 `includeArtifacts` 参数；报告基于 **root session** 键
+  （`rootSessionKey` 沿 parentSession 上溯），子代理查询看到的是委派方的状态。
+
+### P2：自定义角色 / 预算配置 / 状态与指标 CLI
+
+- **自定义角色注册**（`src/config/roles.js`，构建期）：项目根放 `roles.json`
+  （id/role/personaFile/description/permissions 子集），`npm run build:local`
+  合并为额外 `subagent_<id>` 委派工具行（与内置同款隔离：own persona、
+  toolFilter、maxDepth 1、one-shot），并支持 `model-routing.json` 为其配模型；
+  dist 构建永不读取。校验严格：内置 id 冲突、非 snake id、未知权限键、
+  错误类型均构建期报错。`assertAgentDefinition` 的 id 规则改按 TOOL_NAME
+  （委派工具名才是宿主侧标识）。
+- **预算环境配置**：`$DSH_ORCHESTRATION_BUDGETS`（JSON）覆盖
+  每任务委派数 / 每 specialist 尝试数 / 连续失败上限，非法值忽略。
+- **CLI**：`npm run status [sessionId] [--home]`（单会话状态：任务、结果、
+  receipts、fingerprint、artifacts）与 `npm run metrics [--home]`（跨会话
+  质量指标：各 specialist 结果分布与成功率、协议 block 率、receipt 总数）。
+- 动态模型选择与 Web 运行面板确认为宿主能力边界，README 如实记录。
+
+### 其他
+
+- smoke-mount 的子代理过滤器校验改为对 standing scope 的 **visible** 面
+  （`restrictableNames` 只含宿主全局工具，预设自身注册的工具只在 visible
+  中——子代理继承的正是 visible 全集）；smokeMount 失败路径也保证释放
+  harness fiber（此前失败会挂起测试 runner）。
+- 预设模块允许 `node:` 内置导入（preset 目录无 node_modules 的限制不变）。
+
 ## 2026-08-15 — 机械编排运行时（OrchestrationBroker）：写锁、预算与信封门禁接入真实执行链
 
 本轮依据审计报告（问题逐条核验见 `docs/audit-verification-and-modification.md`）实施，

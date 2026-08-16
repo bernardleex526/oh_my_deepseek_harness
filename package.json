@@ -30,6 +30,8 @@
     "test": "node --test",
     "smoke": "node scripts/smoke-mount.mjs",
     "install:mode": "node scripts/install.mjs",
+    "status": "node scripts/orchestration-status.mjs",
+    "metrics": "node scripts/orchestration-metrics.mjs",
     "prepublishOnly": "node scripts/build.mjs && node scripts/validate.mjs"
   },
   "engines": {

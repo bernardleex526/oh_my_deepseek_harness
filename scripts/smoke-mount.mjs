@@ -188,6 +188,10 @@ export async function smokeMount() {
 	// root so the walk lands on the harness's node_modules.
 	const npxRoot = dirname(CHECKOUT);
 	const home = mkdtempSync(join(npxRoot, "dsh-smoke-"));
+	// Hoisted so the finally can dispose the harness even on failure paths
+	// (a leaked fiber leaves handles open and hangs the test runner).
+	let bootCtx;
+	let agentDispose;
 	try {
 		// The headless patch adds the code-runtime + startup rows; we only
 		// need the base rows plus our own agent-presets roster. Mirror the
@@ -213,6 +217,7 @@ export async function smokeMount() {
 		writeFileSync(configPath, JSON.stringify(rows, null, 2), "utf8");
 
 		const ctx = await boot("smoke", configPath, [], void 0, pathToFileURL(CHECKOUT + "/").href);
+		bootCtx = ctx;
 		const agents = ctx.get("agents");
 		const presets = ctx.get("agentPresets");
 		const defaultModel = ctx.get("agentDefaultModel");
@@ -233,6 +238,7 @@ export async function smokeMount() {
 				await presets.mount(agentCtx, PRESET_ID);
 			}
 		});
+		agentDispose = dispose;
 		const composed = agent.ctx.get("agentPresets")?.composedPreset(agent.ctx);
 		if (composed !== PRESET_ID) {
 			throw new Error(`preset not composed for agent (got ${String(composed)})`);
@@ -251,30 +257,31 @@ export async function smokeMount() {
 		// Every specialist's toolFilter must pass the real `tools.restrict()`
 		// name validation a child would hit at setup: restrict() rejects
 		// unknown names against the child's inherited surface. A child joins
-		// this preset's standing composition, so the standing scope's
-		// restrictable names are exactly what the child sees (plus global).
-		// Only the CURRENT platform's branch is ever applied at runtime — the
-		// `!!js` expression in the composition resolves before child setup.
+		// this preset's standing composition, so the standing scope's VISIBLE
+		// names are exactly what the child inherits (host globals + the
+		// preset's own registrations; note that `restrictableNames` on the
+		// standing scope itself only lists ancestor/global tools, so the
+		// correct set is the visible map). Only the CURRENT platform's branch
+		// is ever applied at runtime — the `!!js` expression in the
+		// composition resolves before child setup.
 		const standingKey = await presets.standingKeyFor(PRESET_ID);
 		const standingView = tools.view(standingKey);
-		const restrictable = standingView.restrictableNames;
+		const inheritedSurface = new Set([...standingView.visible.keys()]);
 		let childFilterNames = 0;
 		for (const specialist of SPECIALISTS) {
 			const { allow } = specialist.filterFor(process.platform);
 			for (const name of allow) {
-				if (!restrictable.has(name)) {
-					throw new Error(`child filter for ${specialist.id} names unknown tool "${name}" (visible: ${[...restrictable].sort().join(", ")})`);
+				if (!inheritedSurface.has(name)) {
+					throw new Error(`child filter for ${specialist.id} names unknown tool "${name}" (inherited surface: ${[...inheritedSurface].sort().join(", ")})`);
 				}
 				childFilterNames += 1;
 			}
 		}
 
 		// Real-chain probes must run BEFORE disposal: they drive the live
-		// agent's tool pipeline.
+		// agent's tool pipeline. (Disposal happens in the finally below.)
 		const probes = await realChainProbes(ctx, agent, tools);
 
-		await dispose();
-		await ctx.fiber.dispose();
 		return {
 			toolNames,
 			restrictionApplied,
@@ -283,6 +290,18 @@ export async function smokeMount() {
 			probes
 		};
 	} finally {
+		// ALWAYS dispose the harness: a leaked fiber leaves handles open and
+		// hangs the test runner on failure paths.
+		try {
+			await agentDispose?.();
+		} catch {
+			// disposal failure must not mask the primary error
+		}
+		try {
+			await bootCtx?.fiber.dispose();
+		} catch {
+			// same
+		}
 		rmSync(home, { recursive: true, force: true });
 	}
 }

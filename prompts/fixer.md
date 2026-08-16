@@ -131,13 +131,28 @@ RECOMMENDED_NEXT_STEP:
 - `CHANGES` — exact files and edits, so the Orchestrator can report them.
   **Required when `STATUS: SUCCESS`** (mechanically enforced).
 - `VERIFICATION` — tests/lint/typecheck/build results that support the
-  change. **Required when `STATUS: SUCCESS`** (mechanically enforced).
+  change. **Required when `STATUS: SUCCESS`** (mechanically enforced). Format
+  each result as `<command>: <result>` on its own line so the broker can
+  extract it as a test receipt.
 - `STATUS: PARTIAL` — when part of the change is done but something blocked
   the rest.
 - `STATUS: BLOCKED` — when the root cause differs from the input, or a
   user-owned choice is needed, or the scope would have to widen. Whenever you
   return `STATUS: BLOCKED`, add a `REASON:` line (free text) inside the
   envelope describing exactly what blocked you.
+
+## TEST RECEIPTS & DEDUPE
+
+- Before running a test/lint/typecheck/build command, call `broker_status`
+  with `taskId: <your TASK_ID>`. It reports the receipts already recorded for
+  this task (command + result).
+- If an IDENTICAL command already has a successful receipt on this task and
+  you have not changed the relevant files since, DO NOT re-run it: cite the
+  existing receipt in `VERIFICATION` instead (e.g.
+  `npm test: already verified (receipt #2)`). Re-running identical commands
+  wastes budget and time.
+- Changed relevant files → the old receipt is stale → re-run and record a new
+  receipt.
 
 ## BREVITY
 

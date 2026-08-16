@@ -45,6 +45,11 @@ envelope 返回协议）均与 oh-my-opencode-slim 一脉相承，并利用 DSH 
 - 🚫 **禁止代理图**：`maxDepth: 1` + 过滤器双重保证 specialist 无法再生成代理
 - ⚙️ **模型混用**：每个 specialist 可独立配置 provider / model / maxTokens
 - 🔌 **零侵入**：不修改宿主任何文件，卸载即删目录
+- 🧮 **机械编排运行时（OrchestrationBroker）**：workspace 粒度单写者锁（审批期间保持）、每 TASK_ID 预算（12 委派 / 3 尝试 / 3 连续失败硬停）、envelope 结果门禁（坏信封被 block）、`broker_status` 只读报告——全部在真实工具链上机械强制
+- 🧾 **测试 receipt 去重**：Fixer/Observer 可经 `broker_status` 查询本任务的测试 receipt（`<command>: <result>`），避免同一 pytest 套件跑两遍
+- 💾 **持久化（可选）**：设置 `$DSH_ORCHESTRATION_HOME` 后，每次委派的结果全文与解析元数据、会话状态（预算/结果/receipts/fingerprint）自动落盘——支持崩溃恢复、任务 replay 与质量统计
+- 🧩 **自定义角色（本地构建）**：`roles.json` 声明新 specialist，`npm run build:local` 合并为额外的委派工具，隔离保证与内置六角色一致
+- 📊 **状态/指标 CLI**：`npm run status` / `npm run metrics` 从存储渲染运行状态与历史质量指标
 
 ---
 
@@ -307,7 +312,9 @@ node --test tests/
 | `model-routing.test.mjs` | 每 Agent 模型路由配置的加载与校验、agentOptions 的 YAML 安全引号发射 |
 | `envelope.test.mjs` | 信封**状态与字段校验**（v2 多行协议）：`parseEnvelope`/`isKnownStatus`/`extractTaskId` 接受四个标准状态与 TASK_ID，拒绝未知/缺失/重复字段，多行 CHANGES/VERIFICATION/SPECIFICATION 段完整捕获，缺可选 section 给 warning |
 | `handoff.test.mjs` | handoff **委派提示词渲染**：role-specific 约束 + 每个委派首行声明 TASK_ID + 内嵌信封模板 |
-| `broker.test.mjs` | **OrchestrationBroker 单元**：workspace 键写锁与所有权、TASK_ID 门禁、每任务预算/重试/连续失败、envelope 门禁（含角色证据段）、结果存储、状态报告 |
+| `broker.test.mjs` | **OrchestrationBroker 单元**：workspace 键写锁与所有权、TASK_ID 门禁、每任务预算/重试/连续失败、envelope 门禁（含角色证据段）、测试 receipt 提取、workspace fingerprint、持久化恢复（重启后预算/结果重载）、rootSessionKey、预算 env 解析 |
+| `artifacts.test.mjs` | **ArtifactStore 单元**：落盘/读取/列表/内容哈希、启用语义（仅 `$DSH_ORCHESTRATION_HOME`）、损坏状态降级、会话枚举 |
+| `roles.test.mjs` | **自定义角色**：roles.json 加载/校验（id 冲突、toolName 派生、权限键）、dist 不读 / local 合并、隔离配置一致 |
 | `orchestration.test.mjs` | 控制平面运行时机制：fail-closed 边界安装 + 单写者守卫（workspace 粒度、ask/deny 保持锁、throw 释放、完成/错误路径解锁） |
 | `harness-compat.test.mjs` | 无 host patch 层、不改宿主行、无 provider/MCP 行、确定性构建、工具结果裁剪预算（20000/12000/3000） |
 | `mount.test.mjs` | **真实集成**：启动 harness、挂载 preset、断言组合激活与边界生效、**真实工具链探针**（并发 Fixer 被拒、坏 envelope 被 block、ask 审批期间锁保持） |
@@ -420,13 +427,33 @@ node --test tests/
 - 仓库的 devDeps 中**没有可用的 stub / mock LLM provider**（已检查
   `node_modules/@deepseek-ai`），因此未提供真实调用的集成测试。
 
+### 持久化 / 可观测配置（P1/P2，可选开启）
+
+- **`$DSH_ORCHESTRATION_HOME`**：设置后启用 ArtifactStore——每次委派的结果
+  全文 + 解析元数据落到 `<root>/artifacts/<session>/<taskId>/…`，会话状态
+  （预算、结果、receipts、workspace fingerprint）落到
+  `<root>/state/<session>.json`；进程重启后 broker 自动恢复该会话状态
+  （崩溃恢复 / 任务 replay）。未设置时运行纯内存模式，不写盘。
+- **`$DSH_ORCHESTRATION_BUDGETS`**：JSON 覆盖预算上限，例如
+  `{"maxDelegationsPerTask": 20, "maxConsecutiveFailures": 5}`。
+- **`npm run status [sessionId]` / `npm run metrics`**：从存储渲染单会话
+  状态（任务、结果、receipts、fingerprint、artifacts）或跨会话质量指标
+  （各 specialist 的 SUCCESS/PARTIAL/BLOCKED/ERROR 分布与成功率、协议
+  block 率、receipt 总数）。也支持 `--home <path>` 指定存储根。
+- **自定义角色**：项目根放 `roles.json`（格式见
+  `docs/audit-verification-and-modification.md` 与 `src/config/roles.js`
+  头部注释），`npm run build:local` 会连同 `model-routing.json` 一起合并
+  出额外的委派工具行；dist 构建永不读取它们。
+
 ### 其余已知限制（如实记录）
 
 - **无跨进程全局锁**：单写者锁与 broker 状态是进程本地的。同机多进程同时
   打开同一项目时，进程间不能互相看到对方的锁；审计建议的 lockfile 方案
   需要宿主支持，当前未实现。
-- **无 artifact store**：大结果仍整体经过 pruner 裁剪（20000/12000/3000，
-  无字段排除）；broker 只记录 envelope 摘要与状态，不保存完整 diff/日志。
+- **对话内仍受 pruner 裁剪**：模型看到的结果仍整体经过 pruner
+  （20000/12000/3000，无字段排除）；但**完整原文已由 ArtifactStore 保存**
+  （开启 `$DSH_ORCHESTRATION_HOME` 时），`broker_status --includeArtifacts`
+  与 `npm run status` 可回看。
 - **根代理身份靠持久化的 `parentSession` 头判断**：恢复/导入一个曾是子代理
   的会话时，其头仍带 `parentSession`，会被当作子代理而**不安装**
   Orchestrator 边界（即不会收窄工具）。这是 rc.6 宿主没有
@@ -438,6 +465,9 @@ node --test tests/
 - **Explorer / Observer 的 shell 只读**仍是 prompt 纪律（DSH 权限层无法
   表达只读 shell），它们理论上可用 shell 写文件，从而绕过 Fixer 写锁；
   这是宿主的权限模型限制，README 与对应 prompt 均已明示。
+- **动态模型选择 / 运行状态面板**未实现：按成本延迟动态换模型需要宿主
+  在 spawn 时解析路由（当前为构建期静态 `agentOptions`）；Web 面板需要
+  宿主 client 插件集成。两者均超出 preset 范围，已记录。
 
 ---
 
@@ -456,6 +486,13 @@ node --test tests/
   （缺 STATUS/SUMMARY/TASK_ID、TASK_ID 不匹配、Fixer SUCCESS 缺
   CHANGES/VERIFICATION 等）。重新委派并明确要求完整信封；该次尝试已计入
   预算。
+- **测试跑了两遍 / 想避免重复 pytest？** Fixer/Observer 会先查
+  `broker_status`（传 `taskId`）再决定是否重跑相同命令；也可开启
+  `$DSH_ORCHESTRATION_HOME` 让 receipt 与结果全文落盘，用 `npm run status`
+  回看。
+- **如何开启持久化 / 自定义预算 / 自定义角色？** 见上文“持久化 / 可观测
+  配置”：`$DSH_ORCHESTRATION_HOME`、`$DSH_ORCHESTRATION_BUDGETS`、
+  `roles.json` + `npm run build:local`。
 - **想要后台委派 / fork？** 当前六个委派工具为前台 one-shot（并行通过一条
   消息内多个工具调用实现）。**continuable 会话因架构限制未启用**：DSH 把跟随
   子代理的 `send_message` 工具注册在 continuable 子代理开始之后，而

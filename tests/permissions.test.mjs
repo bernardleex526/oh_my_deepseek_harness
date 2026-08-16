@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { SPECIALISTS } from "../src/agents/catalog.js";
 import {
 	ASK_USER_TOOL,
+	BROKER_STATUS_TOOL,
 	JOB_TOOLS,
 	LIST_AGENTS_TOOL,
 	ORCHESTRATOR_ALLOW,
@@ -36,6 +37,7 @@ const REGISTERED = new Set([
 	TODO_TOOL,
 	...JOB_TOOLS,
 	LIST_AGENTS_TOOL,
+	BROKER_STATUS_TOOL,
 	...SUBAGENT_TOOLS
 ]);
 
@@ -106,6 +108,15 @@ test("Test 11: no specialist surface includes any subagent tool", () => {
 		}
 		assert.ok(!allow.includes(LIST_AGENTS_TOOL), `${specialist.id} sees list_agents`);
 	}
+});
+
+test("Fixer and Observer may query broker_status (test-receipt dedupe); nobody else", () => {
+	assert.ok(filterForAgent("fixer", "posix").allow.includes(BROKER_STATUS_TOOL));
+	assert.ok(filterForAgent("observer", "posix").allow.includes(BROKER_STATUS_TOOL));
+	for (const id of ["explorer", "librarian", "oracle", "designer"]) {
+		assert.ok(!filterForAgent(id, "posix").allow.includes(BROKER_STATUS_TOOL), `${id} sees broker_status`);
+	}
+	assert.ok(ORCHESTRATOR_ALLOW.includes(BROKER_STATUS_TOOL), "orchestrator must see broker_status");
 });
 
 test("shell tools are platform-aware (bash on POSIX, pwsh on Windows)", () => {
