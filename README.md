@@ -12,6 +12,28 @@ Harness 中实现“调查 → 判断 → 执行 → 验证”的完整工作流
 
 ---
 
+## 更新记录（简要）
+
+> 详细变更见 [CHANGELOG.md](CHANGELOG.md)。自 `6a252cd` 起共三轮更新：
+
+- **v0.1.3（2026-08-16）** — 完成门禁 + 审查闭环 + pytest 分层减量 +
+  `broker_route` 路由工具：任务状态自动派生
+  （PLANNED → RUNNING → IMPLEMENTED → VERIFIED → COMPLETE），Oracle 复审
+  BLOCKED 机械阻断该任务后续委派；测试 receipt 支持
+  `[risk=R0-R3,exit,counts,fail]` 注解、同 fingerprint 重复验证机械标记、
+  每任务 receipt 预算；Fixer 内置 R0-R3 风险分层 / 变更测试选择 / 失败分类
+  规则，Observer 不再重跑 Fixer 已验命令。
+- **v0.1.2（2026-08-16）** — P1/P2：ArtifactStore 持久化（结果/状态落盘，
+  崩溃恢复与任务 replay）、workspace fingerprint、测试 receipt 提取与去重
+  查询、自定义角色注册（`roles.json`）、预算环境变量配置、
+  `npm run status` / `npm run metrics` CLI。
+- **v0.1.1（2026-08-15）** — 机械编排运行时（OrchestrationBroker）：单写者
+  锁改为 workspace 粒度并修复 ask 审批洞、TASK_ID 协议、每任务预算机械
+  强制、envelope 结果门禁（坏信封被 block）、`broker_status` 报告工具；
+  构建/安装适配（YAML 安全、force 整目录替换）。
+
+---
+
 ## 灵感来源
 
 本项目是对 [oh-my-opencode-slim](https://github.com/alvinunreal/oh-my-opencode-slim)

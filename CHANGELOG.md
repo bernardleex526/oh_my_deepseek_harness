@@ -1,6 +1,6 @@
 # 更新说明 / CHANGELOG
 
-## 2026-08-16 — 完成门禁 + 审查闭环 + pytest 分层减量 + broker_route
+## v0.1.3（2026-08-16）— 完成门禁 + 审查闭环 + pytest 分层减量 + broker_route
 
 测试由 150 项增至 159 项，全部通过；validate OK；smoke 真实链探针新增
 `broker_route`（16 个工具可见）。
@@ -49,7 +49,7 @@
 - `deriveTaskState`/`parseReceiptLine`/`receiptSucceeded` 为公开纯函数，
   供测试与 CLI 复用。
 
-## 2026-08-16 — P1/P2：ArtifactStore 持久化、测试 receipt 去重、自定义角色、状态/指标 CLI
+## v0.1.2（2026-08-16）— P1/P2：ArtifactStore 持久化、测试 receipt 去重、自定义角色、状态/指标 CLI
 
 在机械编排运行时之上继续实施审计报告的 P1/P2 项。测试由 126 项增至
 150 项，全部通过；validate 与 smoke 真实链探针保持全绿。
@@ -98,7 +98,7 @@
   harness fiber（此前失败会挂起测试 runner）。
 - 预设模块允许 `node:` 内置导入（preset 目录无 node_modules 的限制不变）。
 
-## 2026-08-15 — 机械编排运行时（OrchestrationBroker）：写锁、预算与信封门禁接入真实执行链
+## v0.1.1（2026-08-15）— 机械编排运行时（OrchestrationBroker）：写锁、预算与信封门禁接入真实执行链
 
 本轮依据审计报告（问题逐条核验见 `docs/audit-verification-and-modification.md`）实施，
 把此前"纯 prompt 纪律 + 单写者守卫"升级为**真实工具链上的机械门禁**：
