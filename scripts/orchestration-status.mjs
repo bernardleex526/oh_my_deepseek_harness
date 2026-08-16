@@ -15,9 +15,9 @@
  * @module multi-agent-orchestrator/scripts/orchestration-status
  */
 
-import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { cliStoreRoot, createArtifactStore } from "../src/orchestration/artifacts.mjs";
+import { deriveTaskState } from "../src/orchestration/broker.mjs";
 
 const args = process.argv.slice(2);
 const homeIdx = args.indexOf("--home");
@@ -51,7 +51,8 @@ if (state === null) {
 }
 console.log(`session ${sessionId} (saved ${new Date(state.savedAt ?? 0).toISOString()}):`);
 for (const task of state.tasks ?? []) {
-	console.log(`\ntask "${task.taskId}": ${task.delegationsUsed} delegations, ${task.consecutiveFailures} consecutive failures`);
+	const derived = deriveTaskState(task);
+	console.log(`\ntask "${task.taskId}" [${derived}]: ${task.delegationsUsed} delegations, ${task.consecutiveFailures} consecutive failures, ${(task.receipts ?? []).length} receipts, ${task.duplicateReceipts ?? 0} duplicate verification(s)`);
 	for (const [tool, count] of Object.entries(task.attempts ?? {})) {
 		console.log(`  ${tool}: ${count} attempt(s)`);
 	}

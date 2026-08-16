@@ -131,15 +131,60 @@ RECOMMENDED_NEXT_STEP:
 - `CHANGES` — exact files and edits, so the Orchestrator can report them.
   **Required when `STATUS: SUCCESS`** (mechanically enforced).
 - `VERIFICATION` — tests/lint/typecheck/build results that support the
-  change. **Required when `STATUS: SUCCESS`** (mechanically enforced). Format
-  each result as `<command>: <result>` on its own line so the broker can
-  extract it as a test receipt.
+  change. **Required when `STATUS: SUCCESS`** (mechanically enforced). Use the
+  receipt format below so the broker can extract command-level receipts.
 - `STATUS: PARTIAL` — when part of the change is done but something blocked
   the rest.
 - `STATUS: BLOCKED` — when the root cause differs from the input, or a
   user-owned choice is needed, or the scope would have to widen. Whenever you
   return `STATUS: BLOCKED`, add a `REASON:` line (free text) inside the
   envelope describing exactly what blocked you.
+
+## TEST VERIFICATION PROTOCOL（减少测试、保住完成度）
+
+### Receipt 格式
+
+每条验证结果一行，可选注解 `[key=value,…]`，broker 会机械提取：
+
+```
+VERIFICATION:
+  pytest tests/test_auth.py::test_login [risk=R1,exit=0,counts=1]: 1 passed (0.3s)
+  pytest tests/test_auth.py [risk=R2,exit=1,counts=42,fail=tests/test_auth.py::test_logout]: 41 passed, 1 failed
+  npm run lint [risk=R1,exit=0]: clean
+```
+
+- `risk` — 风险层（见下）；`exit` — 退出码；`counts` — 用例数；
+  `fail` — 失败 nodeid（`;` 分隔）。
+- 注解可省略（`npm test: 42 passed` 也能解析），但**声明 risk 层**能让
+  Observer 与统计正确对待这次验证。
+
+### 风险分层（决定跑什么）
+
+| 层 | 变化类型 | 迭代测试 | 最终门禁 |
+|---|---|---|---|
+| R0 | 文档、注释、纯文本 | 不跑 pytest | 格式/生成一致性 |
+| R1 | 单模块纯逻辑、局部 bug | 精确 nodeid | 受影响单元测试 |
+| R2 | 公共接口、schema、共享模块 | unit + contract | Observer 跑受影响 integration |
+| R3 | 安全、并发、迁移、数据库、基础设施 | 最小失败用例 | contract + integration + 关键 E2E，必要时全量 |
+
+### 变更测试选择（依次尝试，命中即停）
+
+1. **直接修改的测试文件** → 精确 nodeid（`pytest tests/x.py::test_y`）。
+2. **源码→测试映射** → 同目录 `test_*.py`/`*_test.py`，或按 import 关系找
+   直接依赖该模块的测试。
+3. **同包规则** → 同一 package 的测试。
+4. **自动跳级**：修改了 `conftest.py`、共享 fixture、依赖锁、数据库 schema
+   或公共契约 → 直接升到 integration / 全量，不要停在单元层。
+5. **全量 pytest 每个 workspace 最多一次**：只有测试失败且代码确实变化后，
+   才允许在同一任务里跑第二次全量。
+
+### 失败分类（不要盲目重跑）
+
+- **assertion failure** → 只重跑失败的 nodeid（一次）。
+- **collection / infra failure**（导入错误、fixture 爆炸、环境问题）→
+  诊断一次后返回 `BLOCKED` 并说明，不要重试风暴。
+- **疑似 flaky** → 精确重跑一次；通过也不能当稳定证据，在结果里注明
+  `(flaky?)`。
 
 ## TEST RECEIPTS & DEDUPE
 
@@ -153,6 +198,8 @@ RECOMMENDED_NEXT_STEP:
   wastes budget and time.
 - Changed relevant files → the old receipt is stale → re-run and record a new
   receipt.
+- 报告式预算：每个任务报告的测试命令有上限（默认 12 条，broker 会提示
+  超限）。优先引用旧 receipt，不要堆命令。
 
 ## BREVITY
 

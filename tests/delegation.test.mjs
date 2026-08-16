@@ -62,14 +62,17 @@ test("orchestration.mjs is a dependency-free preset row (siblings + node builtin
 	assert.ok(!/^\s*import\s+.*\s+from\s+["'](?!\.|node:)/m.test(source), "orchestration.mjs must not import bare specifiers");
 	assert.match(source, /from "\.\/broker\.mjs"/, "orchestration.mjs must import ./broker.mjs");
 	assert.match(source, /from "\.\/artifacts\.mjs"/, "orchestration.mjs must import ./artifacts.mjs");
+	assert.match(source, /from "\.\/policy\.mjs"/, "orchestration.mjs must import ./policy.mjs");
 	// The sibling modules must be equally node_modules-free.
 	const brokerSource = readFileSync(join(ROOT, "src", "orchestration", "broker.mjs"), "utf8");
 	const protocolSource = readFileSync(join(ROOT, "src", "orchestration", "protocol.mjs"), "utf8");
 	const artifactsSource = readFileSync(join(ROOT, "src", "orchestration", "artifacts.mjs"), "utf8");
+	const policySource = readFileSync(join(ROOT, "src", "orchestration", "policy.mjs"), "utf8");
 	assert.ok(!/^\s*import\s+.*\s+from\s+["'](?!\.|node:)/m.test(brokerSource), "broker.mjs must not import bare specifiers");
 	assert.match(brokerSource, /from "\.\/protocol\.mjs"/, "broker.mjs must import ./protocol.mjs");
 	assert.match(brokerSource, /from "\.\/artifacts\.mjs"/, "broker.mjs must import ./artifacts.mjs");
 	assert.ok(!/^\s*import\s+.*\s+from\s+["'](?!\.|node:)/m.test(artifactsSource), "artifacts.mjs must not import bare specifiers");
+	assert.ok(!/^\s*import\s+.*\s+from\s+["'](?!\.|node:)/m.test(policySource), "policy.mjs must not import bare specifiers");
 	assert.ok(!/^\s*import\b/m.test(protocolSource), "protocol.mjs must be import-free");
 });
 

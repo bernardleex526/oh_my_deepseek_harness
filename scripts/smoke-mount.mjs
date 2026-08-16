@@ -60,7 +60,7 @@ async function loadPackage(name) {
  * @returns {Promise<{gateDenied: boolean, askSerialized: boolean | "skipped", envelopeBlocked: boolean}>}
  */
 async function realChainProbes(ctx, agent, tools) {
-	const results = { gateDenied: false, askSerialized: "skipped", envelopeBlocked: false };
+	const results = { gateDenied: false, askSerialized: "skipped", envelopeBlocked: false, routeAdvice: null };
 
 	// ── controllable stub tool shadowing subagent_fixer on the agent scope ──
 	let stubOutput = "stub";
@@ -147,6 +147,22 @@ async function realChainProbes(ctx, agent, tools) {
 		if (process.env.SMOKE_DEBUG_ASK === "1") console.error(`[smoke] ask probe skipped: ${error?.message ?? error}`);
 	}
 
+	// ── probe 4: the broker_route advisory tool works on the real chain ────
+	try {
+		const routed = await tools.execute({
+			name: "broker_route",
+			agent,
+			callId: "smoke-route-1",
+			signal: new AbortController().signal,
+			arguments: { task: "Where is the auth implementation in src/auth.js?" }
+		});
+		if (!routed.isError && typeof routed.value?.advice === "string") {
+			results.routeAdvice = /primary: explorer/.test(routed.value.advice) ? "explorer" : "other";
+		}
+	} catch {
+		results.routeAdvice = null; // registration failure — asserted by the caller
+	}
+
 	return results;
 }
 
@@ -179,7 +195,6 @@ export async function smokeMount() {
 	});
 	const entrySchema = yaml.JSON_SCHEMA.extend(JsExpr);
 	const basePatch = yaml.load(readFileSync(join(CHECKOUT, "dsh-base", "cordis.patch.yml"), "utf8"), { schema: entrySchema });
-	const data = [];
 	const warn = () => {};
 	const baseRows = composeEntries([basePatch], warn);
 	// Bare `@deepseek-ai/*` specifiers in the preset resolve via Node's upward
@@ -317,6 +332,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 		if (result.probes.gateDenied !== true) problems.push("real-chain single-writer gate did not deny a concurrent fixer");
 		if (result.probes.envelopeBlocked !== true) problems.push("real-chain envelope gate did not block a malformed result");
 		if (result.probes.askSerialized === false) problems.push("real-chain writer lock was NOT held through an ask approval");
+		if (result.probes.routeAdvice !== "explorer") problems.push(`real-chain broker_route did not advise explorer (got ${String(result.probes.routeAdvice)})`);
 		if (problems.length > 0) {
 			console.error("smoke-mount FAILED:");
 			for (const p of problems) console.error(`  ✗ ${p}`);
@@ -328,7 +344,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 		console.log("  boundary enforced: write/edit/bash/pwsh hidden");
 		console.log(`  child filter names validated: ${result.childFilterNames} (${process.platform})`);
 		console.log("  orchestrator surface:", ORCHESTRATOR_ALLOW.join(", "));
-		console.log(`  real-chain probes: gateDenied=${result.probes.gateDenied} envelopeBlocked=${result.probes.envelopeBlocked} askSerialized=${result.probes.askSerialized}`);
+		console.log(`  real-chain probes: gateDenied=${result.probes.gateDenied} envelopeBlocked=${result.probes.envelopeBlocked} askSerialized=${result.probes.askSerialized} routeAdvice=${result.probes.routeAdvice}`);
 	}).catch((error) => {
 		console.error("smoke-mount FAILED:", error);
 		process.exit(1);

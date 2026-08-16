@@ -22,6 +22,9 @@ import {
 	FIXER_DELEGATION,
 	DEFAULT_BUDGETS,
 	extractReceipts,
+	parseReceiptLine,
+	receiptSucceeded,
+	deriveTaskState,
 	readBudgetsFromEnv,
 	BUDGETS_ENV
 } from "../src/orchestration/broker.mjs";
@@ -468,4 +471,145 @@ test("report supports taskId filtering and artifact listing", (t) => {
 	const withArtifacts = broker.report("session-A", { taskId: "t1", includeArtifacts: true });
 	assert.match(withArtifacts, /artifacts \(1\)/);
 	assert.match(withArtifacts, /t1\/000-subagent_explorer/);
+});
+
+// ── P1: receipt annotation schema (pytest layering) ────────────────────────
+
+test("parseReceiptLine handles plain and annotated receipt lines", () => {
+	assert.deepEqual(parseReceiptLine("npm test: 42 passed"), { command: "npm test", result: "42 passed" });
+	assert.deepEqual(
+		parseReceiptLine("pytest tests/test_auth.py::test_login [risk=R1,exit=0,counts=1]: 1 passed (0.3s)"),
+		{ command: "pytest tests/test_auth.py::test_login", result: "1 passed (0.3s)", risk: "R1", exit: 0, counts: 1 }
+	);
+	const failed = parseReceiptLine("pytest tests/test_auth.py [risk=R2,exit=1,counts=42,fail=tests/test_auth.py::test_logout]: 41 passed, 1 failed");
+	assert.equal(failed.risk, "R2");
+	assert.equal(failed.exit, 1);
+	assert.deepEqual(failed.fail, ["tests/test_auth.py::test_logout"]);
+	// section headers and non-command lines do not parse
+	assert.equal(parseReceiptLine("STATUS: SUCCESS"), null);
+	assert.equal(parseReceiptLine("all good here"), null);
+	assert.equal(parseReceiptLine(""), null);
+});
+
+test("receiptSucceeded uses exit code first, then result text", () => {
+	assert.equal(receiptSucceeded({ exit: 0, result: "1 failed" }), true, "exit=0 wins");
+	assert.equal(receiptSucceeded({ exit: 1, result: "42 passed" }), false, "exit=1 fails");
+	assert.equal(receiptSucceeded({ result: "42 passed" }), true);
+	assert.equal(receiptSucceeded({ result: "2 failed, 3 error" }), false);
+});
+
+test("duplicate verification is detected when the workspace fingerprint is unchanged", () => {
+	const broker = createBroker();
+	const fix = exec(FIXER, "t1", { prompt: "TASK_ID: t1\nFix it." });
+	broker.gate(fix);
+	broker.markDispatched(fix);
+	broker.settle(fix, {
+		text: "TASK_ID: t1\nSTATUS: SUCCESS\nSUMMARY: fixed.\nCHANGES:\n  a: b\nVERIFICATION:\n  npm test [risk=R1,exit=0,counts=42]: 42 passed",
+		isError: false
+	});
+	const obs = exec("subagent_observer", "t2", { prompt: "TASK_ID: t1\nVerify." });
+	broker.gate(obs);
+	broker.markDispatched(obs);
+	const outcome = broker.settle(obs, {
+		text: "TASK_ID: t1\nSTATUS: SUCCESS\nSUMMARY: verified.\nOBSERVED:\n  npm test [risk=R1,exit=0,counts=42]: 42 passed",
+		isError: false
+	});
+	assert.equal(outcome.decision.kind, "accept");
+	const snap = broker.snapshot("session-A");
+	const task = snap.tasks[0];
+	assert.equal(task.duplicateReceipts, 1, "identical command at the same fingerprint must be flagged");
+	const obsResult = task.results.at(-1);
+	assert.ok(obsResult.warnings.some((w) => w.startsWith("duplicate verification")), obsResult.warnings.join(" | "));
+	const obsReceipt = task.receipts.at(-1);
+	assert.equal(obsReceipt.duplicate, true);
+});
+
+test("a changed workspace fingerprint does NOT flag a re-run as duplicate", () => {
+	// Deterministic stand-in for "the workspace changed between runs":
+	// when NO git fingerprint is available (non-repo cwd), the dedupe rule
+	// must be conservative and flag nothing, never a false positive.
+	const broker = createBroker();
+	const cwd = "/nonexistent-dir-for-fingerprint";
+	const fix = exec(FIXER, "t1", { cwd, prompt: "TASK_ID: t1\nFix it." });
+	broker.gate(fix);
+	broker.markDispatched(fix);
+	broker.settle(fix, { text: "TASK_ID: t1\nSTATUS: SUCCESS\nSUMMARY: ok.\nCHANGES:\n  a: b\nVERIFICATION:\n  npm test: 42 passed", isError: false });
+	const obs = exec("subagent_observer", "t3", { cwd, prompt: "TASK_ID: t1\nVerify." });
+	broker.gate(obs);
+	broker.markDispatched(obs);
+	broker.settle(obs, { text: "TASK_ID: t1\nSTATUS: SUCCESS\nSUMMARY: verified.\nOBSERVED:\n  npm test: 42 passed", isError: false });
+	const task = broker.snapshot("session-A").tasks[0];
+	assert.equal(task.duplicateReceipts, 0, "without a fingerprint the rule must not guess");
+	assert.equal(task.workspaceFingerprint, null);
+});
+
+test("receipt budget warns when a task reports more commands than allowed", () => {
+	const broker = createBroker({ maxReceiptsPerTask: 1 });
+	const fix = exec(FIXER, "t1", { prompt: "TASK_ID: t1\nFix it." });
+	broker.gate(fix);
+	broker.markDispatched(fix);
+	broker.settle(fix, {
+		text: "TASK_ID: t1\nSTATUS: SUCCESS\nSUMMARY: ok.\nCHANGES:\n  a: b\nVERIFICATION:\n  npm test: 42 passed\n  pytest tests/unit: 17 passed\n  npm run lint: clean",
+		isError: false
+	});
+	const result = broker.snapshot("session-A").tasks[0].results[0];
+	assert.ok(result.warnings.some((w) => w.includes("receipt budget exceeded")), result.warnings.join(" | "));
+});
+
+// ── completion gate: derived task states ───────────────────────────────────
+
+test("deriveTaskState walks PLANNED → RUNNING → IMPLEMENTED → VERIFIED → COMPLETE", () => {
+	const mk = () => ({ taskId: "t1", results: [], receipts: [], attempts: new Map(), consecutiveFailures: 0, delegationsUsed: 0, workspaceFingerprint: null, duplicateReceipts: 0 });
+	const t = mk();
+	assert.equal(deriveTaskState(t), "PLANNED");
+	t.results.push({ tool: EXPLORER, status: "SUCCESS" });
+	assert.equal(deriveTaskState(t), "RUNNING");
+	t.results.push({ tool: FIXER_DELEGATION, status: "SUCCESS" });
+	assert.equal(deriveTaskState(t), "IMPLEMENTED");
+	t.results.push({ tool: "subagent_observer", status: "SUCCESS" });
+	assert.equal(deriveTaskState(t), "COMPLETE");
+});
+
+test("deriveTaskState requires a passed Oracle review when Oracle was consulted", () => {
+	const mk = () => ({ taskId: "t1", results: [
+		{ tool: FIXER_DELEGATION, status: "SUCCESS" },
+		{ tool: "subagent_observer", status: "SUCCESS" }
+	], receipts: [], attempts: new Map(), consecutiveFailures: 0, delegationsUsed: 0, workspaceFingerprint: null, duplicateReceipts: 0 });
+	const t = mk();
+	t.results.push({ tool: "subagent_oracle", status: "PARTIAL" });
+	assert.equal(deriveTaskState(t), "VERIFIED", "review pending → verified but not complete");
+	t.results.push({ tool: "subagent_oracle", status: "SUCCESS" });
+	assert.equal(deriveTaskState(t), "COMPLETE", "review passed → complete");
+});
+
+test("an Oracle BLOCKED review blocks the task and the gate denies further delegations", () => {
+	const broker = createBroker();
+	const mk = (tool, token, prompt) => exec(tool, token, { prompt });
+	const settle = (e, text) => {
+		broker.gate(e);
+		broker.markDispatched(e);
+		return broker.settle(e, { text, isError: false });
+	};
+	settle(mk(FIXER_DELEGATION, "f1", "TASK_ID: t1\nFix."), "TASK_ID: t1\nSTATUS: SUCCESS\nSUMMARY: ok.\nCHANGES:\n  a: b\nVERIFICATION:\n  npm test: pass");
+	settle(mk("subagent_observer", "o1", "TASK_ID: t1\nVerify."), "TASK_ID: t1\nSTATUS: SUCCESS\nSUMMARY: ok.\nOBSERVED:\n  npm test: pass");
+	settle(mk("subagent_oracle", "r1", "TASK_ID: t1\nReview."), "TASK_ID: t1\nSTATUS: BLOCKED\nSUMMARY: design is unsafe.");
+
+	assert.equal(broker.snapshot("session-A").tasks[0].state, "BLOCKED");
+	// EVERY further delegation on this task id is denied with the review reason.
+	const denied = broker.gate(mk(EXPLORER, "x1", "TASK_ID: t1\nInvestigate more."));
+	assert.equal(denied.ok, false);
+	assert.equal(denied.kind, "review");
+	assert.match(denied.reason, /review blocked/);
+	// A NEW task id is unaffected.
+	assert.equal(broker.gate(mk(EXPLORER, "x2", "TASK_ID: t2\nNew problem.")).ok, true);
+});
+
+test("report shows the derived state and completion hints", () => {
+	const broker = createBroker();
+	roundTrip(broker, exec(FIXER_DELEGATION, "f1", { prompt: "TASK_ID: t1\nFix." }), { text: "TASK_ID: t1\nSTATUS: SUCCESS\nSUMMARY: ok.\nCHANGES:\n  a: b\nVERIFICATION:\n  npm test: pass" });
+	roundTrip(broker, exec("subagent_observer", "o1", { prompt: "TASK_ID: t1\nVerify." }), { text: "TASK_ID: t1\nSTATUS: SUCCESS\nSUMMARY: ok.\nOBSERVED:\n  npm test: pass" });
+	const report = broker.report("session-A");
+	assert.match(report, /\[COMPLETE\]/);
+	assert.match(report, /reporting completion is now allowed/);
+	assert.match(report, /2\/12 receipts/);
 });

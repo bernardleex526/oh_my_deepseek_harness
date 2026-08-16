@@ -1,5 +1,54 @@
 # 更新说明 / CHANGELOG
 
+## 2026-08-16 — 完成门禁 + 审查闭环 + pytest 分层减量 + broker_route
+
+测试由 150 项增至 159 项，全部通过；validate OK；smoke 真实链探针新增
+`broker_route`（16 个工具可见）。
+
+### 完成门禁 + 审查闭环（面向“主代理管着子代理完成任务”）
+
+- broker 按记录**自动派生任务状态**：`PLANNED → RUNNING → IMPLEMENTED`
+  （Fixer SUCCESS）→ `VERIFIED`（Observer SUCCESS）→ `COMPLETE`（未咨询
+  Oracle，或最新 Oracle 为 SUCCESS）。`broker_status` 显示每个任务的状态与
+  完成提示；Orchestrator prompt 强制“状态非 COMPLETE 不得宣布完成”。
+- **审查失败闭环机械化**：最新 Oracle 复审为 `BLOCKED` 时，该 TASK_ID 的
+  **全部后续委派在门前被 DENY**（reason: review blocked）——必须换新
+  TASK_ID 以修正方案重开，或停止汇报。
+
+### pytest 分层与减量（解决“pytest 太多导致进度慢”）
+
+- **receipt 注解 schema**：`<command> [risk=R0-R3,exit=N,counts=M,fail=a::b;c]: <result>`
+  机械解析（`parseReceiptLine`/`receiptSucceeded`）；纯 `<command>: <result>`
+  仍兼容。
+- **重复验证机械检测**：同一任务、相同命令、相同 workspace fingerprint 的
+  重复 receipt 被标记 `duplicate` 并计数，警告写入结果记录；fingerprint
+  不可用时保守不标记。Observer prompt 明确“不重跑 Fixer 已跑过的相同命令，
+  改为核对 receipt + 升层验证 + 抽样复核”。
+- **报告式 receipt 预算**：每任务默认 12 条（`maxReceiptsPerTask`，可经
+  `$DSH_ORCHESTRATION_BUDGETS` 覆盖），超限在 broker_status 与结果警告中
+  提示。
+- **风险分层与测试选择规则内嵌 Fixer prompt**：R0 不跑 pytest；R1 精确
+  nodeid；R2 unit+contract；R3 最小失败用例→integration/E2E；变更测试
+  选择决策树（直接修改→源码映射→同包→改共享件自动跳级→全量每 fingerprint
+  至多一次）；失败分类（assertion 只重跑失败 nodeid、collection/infra
+  诊断一次即 BLOCKED、flaky 精确重跑一次）。
+- metrics CLI 新增：任务状态分布、receipt 风险层统计、重复验证计数；
+  status CLI 显示派生任务状态。
+
+### broker_route：路由参考实现接入运行时
+
+- `route()`/`scoreTask()` 迁入 `src/orchestration/policy.mjs`（随 preset
+  发布，`src/routing/policy.js` 改为 shim）；Orchestrator 新增 advisory
+  工具 `broker_route`（传子问题文本，返回建议角色与候选，与提示词内嵌
+  路由表同源）。smoke 真实链探针验证。
+
+### 其他
+
+- 清理冗余：删除 `catalog.specialistById`（无引用）、smoke-mount 遗留的
+  `const data = []`、orchestration-status 未使用的 fs 导入。
+- `deriveTaskState`/`parseReceiptLine`/`receiptSucceeded` 为公开纯函数，
+  供测试与 CLI 复用。
+
 ## 2026-08-16 — P1/P2：ArtifactStore 持久化、测试 receipt 去重、自定义角色、状态/指标 CLI
 
 在机械编排运行时之上继续实施审计报告的 P1/P2 项。测试由 126 项增至

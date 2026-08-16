@@ -37,6 +37,8 @@ export const JOB_TOOLS = ["job_list", "job_output", "job_kill"];
 export const LIST_AGENTS_TOOL = "list_agents";
 /** The broker report tool (registered by the orchestration row). */
 export const BROKER_STATUS_TOOL = "broker_status";
+/** The advisory routing tool (registered by the orchestration row). */
+export const BROKER_ROUTE_TOOL = "broker_route";
 /** Delegation tool names, one per specialist. */
 export const SUBAGENT_TOOLS = [
 	"subagent_explorer",
@@ -68,6 +70,7 @@ export const ORCHESTRATOR_ALLOW = [
 	WEB_SEARCH_TOOL,
 	LIST_AGENTS_TOOL,
 	BROKER_STATUS_TOOL,
+	BROKER_ROUTE_TOOL,
 	...SUBAGENT_TOOLS
 ];
 

@@ -46,10 +46,12 @@ envelope 返回协议）均与 oh-my-opencode-slim 一脉相承，并利用 DSH 
 - ⚙️ **模型混用**：每个 specialist 可独立配置 provider / model / maxTokens
 - 🔌 **零侵入**：不修改宿主任何文件，卸载即删目录
 - 🧮 **机械编排运行时（OrchestrationBroker）**：workspace 粒度单写者锁（审批期间保持）、每 TASK_ID 预算（12 委派 / 3 尝试 / 3 连续失败硬停）、envelope 结果门禁（坏信封被 block）、`broker_status` 只读报告——全部在真实工具链上机械强制
-- 🧾 **测试 receipt 去重**：Fixer/Observer 可经 `broker_status` 查询本任务的测试 receipt（`<command>: <result>`），避免同一 pytest 套件跑两遍
-- 💾 **持久化（可选）**：设置 `$DSH_ORCHESTRATION_HOME` 后，每次委派的结果全文与解析元数据、会话状态（预算/结果/receipts/fingerprint）自动落盘——支持崩溃恢复、任务 replay 与质量统计
+- ✅ **完成门禁 + 审查闭环**：broker 按记录自动派生任务状态 `PLANNED → RUNNING → IMPLEMENTED → VERIFIED → COMPLETE`；完成前必须 Fixer SUCCESS + Observer SUCCESS +（咨询过 Oracle 时）Oracle SUCCESS；**Oracle 复审 BLOCKED 会机械阻断该 TASK_ID 的全部后续委派**
+- 🧭 **`broker_route` 路由工具**：Orchestrator 可随时把子问题文本交给与提示词同源的评分模型，拿到建议角色与候选（advisory，不强制）
+- 🧾 **测试 receipt 分层与去重**：VERIFICATION/OBSERVED 支持 `[risk=R0-R3,exit,counts,fail]` 注解；Fixer/Observer 先查 `broker_status` 避免重跑相同命令；**同 fingerprint 的重复验证被机械标记**；每任务报告式 receipt 预算（默认 12 条）；风险分层/变更测试选择/失败分类规则内嵌 Fixer prompt
+- 💾 **持久化（可选）**：设置 `$DSH_ORCHESTRATION_HOME` 后，每次委派的结果全文与解析元数据、会话状态（预算/结果/receipts/fingerprint/任务状态）自动落盘——支持崩溃恢复、任务 replay 与质量统计
 - 🧩 **自定义角色（本地构建）**：`roles.json` 声明新 specialist，`npm run build:local` 合并为额外的委派工具，隔离保证与内置六角色一致
-- 📊 **状态/指标 CLI**：`npm run status` / `npm run metrics` 从存储渲染运行状态与历史质量指标
+- 📊 **状态/指标 CLI**：`npm run status` / `npm run metrics` 从存储渲染运行状态（含任务状态与 receipt 分层）与历史质量指标
 
 ---
 
@@ -312,7 +314,7 @@ node --test tests/
 | `model-routing.test.mjs` | 每 Agent 模型路由配置的加载与校验、agentOptions 的 YAML 安全引号发射 |
 | `envelope.test.mjs` | 信封**状态与字段校验**（v2 多行协议）：`parseEnvelope`/`isKnownStatus`/`extractTaskId` 接受四个标准状态与 TASK_ID，拒绝未知/缺失/重复字段，多行 CHANGES/VERIFICATION/SPECIFICATION 段完整捕获，缺可选 section 给 warning |
 | `handoff.test.mjs` | handoff **委派提示词渲染**：role-specific 约束 + 每个委派首行声明 TASK_ID + 内嵌信封模板 |
-| `broker.test.mjs` | **OrchestrationBroker 单元**：workspace 键写锁与所有权、TASK_ID 门禁、每任务预算/重试/连续失败、envelope 门禁（含角色证据段）、测试 receipt 提取、workspace fingerprint、持久化恢复（重启后预算/结果重载）、rootSessionKey、预算 env 解析 |
+| `broker.test.mjs` | **OrchestrationBroker 单元**：workspace 键写锁与所有权、TASK_ID 门禁、每任务预算/重试/连续失败、envelope 门禁（含角色证据段）、receipt 注解解析与重复验证检测、workspace fingerprint、持久化恢复、**任务状态派生与 Oracle 审查阻断**、rootSessionKey、预算 env 解析 |
 | `artifacts.test.mjs` | **ArtifactStore 单元**：落盘/读取/列表/内容哈希、启用语义（仅 `$DSH_ORCHESTRATION_HOME`）、损坏状态降级、会话枚举 |
 | `roles.test.mjs` | **自定义角色**：roles.json 加载/校验（id 冲突、toolName 派生、权限键）、dist 不读 / local 合并、隔离配置一致 |
 | `orchestration.test.mjs` | 控制平面运行时机制：fail-closed 边界安装 + 单写者守卫（workspace 粒度、ask/deny 保持锁、throw 释放、完成/错误路径解锁） |

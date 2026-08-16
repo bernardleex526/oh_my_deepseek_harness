@@ -131,14 +131,3 @@ export const SPECIALISTS = [
 
 /** Agent ids in delegation order. */
 export const SPECIALIST_IDS = SPECIALISTS.map((s) => s.id);
-
-/**
- * Look up one specialist by id.
- * @param {string} id - specialist id.
- * @returns {object} the specialist definition.
- */
-export function specialistById(id) {
-	const found = SPECIALISTS.find((s) => s.id === id);
-	if (found === void 0) throw new Error(`unknown specialist "${id}"`);
-	return found;
-}

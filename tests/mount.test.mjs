@@ -44,4 +44,5 @@ test("real harness boot mounts the preset and enforces every boundary", async ()
 	assert.equal(result.probes.gateDenied, true, "concurrent fixer must be denied by the real single-writer gate");
 	assert.equal(result.probes.envelopeBlocked, true, "malformed envelope must be blocked by the real post-execute gate");
 	assert.notEqual(result.probes.askSerialized, false, "the writer lock must be held through an ask approval (or the probe skipped)");
+	assert.equal(result.probes.routeAdvice, "explorer", "broker_route must advise explorer on the real chain");
 });

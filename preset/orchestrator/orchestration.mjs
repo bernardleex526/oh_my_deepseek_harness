@@ -49,6 +49,7 @@
 
 import { createBroker, isDelegationTool, rootSessionKey, readBudgetsFromEnv } from "./broker.mjs";
 import { createArtifactStore } from "./artifacts.mjs";
+import { route, scoreTask } from "./policy.mjs";
 
 /** Delegation tool names the Orchestrator may invoke. */
 const SUBAGENT_TOOLS = [
@@ -78,6 +79,7 @@ export const ORCHESTRATOR_ALLOW = [
 	"web_search",
 	"list_agents",
 	"broker_status",
+	"broker_route",
 	...SUBAGENT_TOOLS
 ];
 
@@ -232,5 +234,49 @@ export function apply(ctx) {
 		}
 	} catch (error) {
 		ctx.logger?.warn?.(`orchestration: broker_status tool registration failed: ${String(error)}`);
+	}
+
+	// Advisory routing tool: the Orchestrator can check its routing decision
+	// against the SAME scoring model its prompt embeds (ROUTING_POLICY). The
+	// advice is NOT enforced — decomposition and final choice stay with the
+	// model — but it makes the reference implementation reachable at runtime
+	// instead of living only in tests.
+	try {
+		const tools = ctx.get("tools");
+		if (tools?.register !== void 0) {
+			tools.register({
+				name: "broker_route",
+				description: "Advisory routing: score a subproblem text against the same routing table embedded in your prompt and return the recommended specialist (plus alternates). Use it to double-check your routing decision before delegating; the decision itself remains yours.",
+				parameters: {
+					type: "object",
+					properties: { task: { type: "string" } },
+					required: ["task"],
+					additionalProperties: false
+				},
+				isConcurrencySafe: () => true,
+				output: {
+					schema: {
+						type: "object",
+						properties: { advice: { type: "string" } },
+						required: ["advice"],
+						additionalProperties: false
+					},
+					render: (_args, value) => [{ type: "text", text: value.advice }]
+				},
+				execute: (args) => {
+					const decision = route(String(args.task ?? ""));
+					const scored = scoreTask(String(args.task ?? ""));
+					const candidates = scored.slice(0, 4).map((c) => `${c.agent}(${c.score})`).join(", ");
+					const lines = [
+						`primary: ${decision.primary ?? "none"}`,
+						candidates ? `candidates: ${candidates}` : "candidates: none",
+						"note: advisory only — the routing table in your prompt is the same model."
+					];
+					return { advice: lines.join("\n") };
+				}
+			});
+		}
+	} catch (error) {
+		ctx.logger?.warn?.(`orchestration: broker_route tool registration failed: ${String(error)}`);
 	}
 }

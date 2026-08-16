@@ -3,8 +3,8 @@
 - 审计快照：`bernardleex526/oh_my_deepseek_harness@6a252cd`（main）
 - 核验/修改环境：Windows 11 + Node 24.16，DSH `@deepseek-ai/dsh@0.1.0-rc.6`
   真实安装（`C:\Users\bernard\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh`）
-- 修改后：测试 **150/150 通过**（原 92；P0 轮 126，P1/P2 轮 +24），`validate`
-  OK，`smoke` 真实链探针全绿（`docs/` 附录 A 记录 P1/P2 轮）
+- 修改后：测试 **159/159 通过**（原 92；P0 轮 126，P1/P2 轮 150，附录 B 轮 159），
+  `validate` OK，`smoke` 真实链探针全绿（`docs/` 附录 A、B 记录各轮）
 
 ---
 
@@ -212,3 +212,66 @@ build:local     → roles.json + model-routing.json 端到端合并 ✅ 实测�
 - 动态模型选择、Web 运行面板、token/pytest 时间预算：宿主能力边界，未实施；
 - 审查失败闭环与隔离 worktree/journal 回滚：仍需宿主级支持，未实施；
 - 对话内 pruner 裁剪依旧（完整原文已由 ArtifactStore 保存，可回看）。
+
+---
+
+# 附录 B：完成门禁 + 审查闭环 + pytest 分层 + broker_route（2026-08-16）
+
+## 本轮内容
+
+针对"主代理管着子代理完成任务"目标的最后三块差距：
+
+1. **完成门禁**：`deriveTaskState()` 按记录派生任务状态
+   （PLANNED → RUNNING → IMPLEMENTED → VERIFIED → COMPLETE），
+   `broker_status`/status CLI 显示；Orchestrator prompt 强制"状态非 COMPLETE
+   不得宣布完成"。
+2. **审查失败闭环**：最新 Oracle 复审 BLOCKED → 任务状态 BLOCKED →
+   `tools/pre-execute` 门禁对该 TASK_ID 的全部后续委派机械 DENY
+   （kind: review）。
+3. **pytest 分层与减量**：
+   - receipt 注解 schema `[risk=R0-R3,exit,counts,fail]`（`parseReceiptLine`）；
+   - 同任务同命令同 fingerprint 的重复验证机械标记（`duplicate` 计数 +
+     结果警告），fingerprint 缺失时保守不标记；
+   - 报告式 receipt 预算（`maxReceiptsPerTask`，默认 12）；
+   - R0-R3 风险分层、变更测试选择决策树、失败分类规则内嵌 Fixer prompt；
+     Observer 改为"核对 receipt + 升层验证 + 抽样复核，不重跑相同命令"。
+4. **broker_route**：policy 迁入 `src/orchestration/policy.mjs`（随 preset
+   发布），`routing/policy.js` 变 shim；Orchestrator 新增 advisory 路由工具，
+   与提示词内嵌路由表同源；smoke 真实链探针验证 `routeAdvice=explorer`。
+
+## 文件级变更
+
+| 文件 | 变更 |
+|---|---|
+| `src/orchestration/policy.mjs`（新，随 preset 发布） | policy.js 原样迁入（import-free），`routing/policy.js` 变 shim |
+| `src/orchestration/broker.mjs` | `deriveTaskState`/`parseReceiptLine`/`receiptSucceeded`；任务级 receipts 累积 + workspaceFingerprint + duplicateReceipts（含持久化/重载）；重复验证检测；Oracle BLOCKED 门禁；receipt 预算；report/snapshot 扩展 |
+| `src/orchestration/orchestration.mjs` | 注册 `broker_route` 工具；ORCHESTRATOR_ALLOW 增加 broker_route |
+| `src/permissions/agent-permissions.js` | `BROKER_ROUTE_TOOL` 并入 ORCHESTRATOR_ALLOW |
+| `scripts/build.mjs` / `validate.mjs` | 复制/校验 policy.mjs；broker_route 计入已注册工具 |
+| `scripts/smoke-mount.mjs` | 新增 broker_route 真实链探针；清理遗留 `const data = []` |
+| `scripts/orchestration-status.mjs` | 显示派生任务状态 + receipts/重复计数；清理未用 fs 导入 |
+| `scripts/orchestration-metrics.mjs` | 任务状态分布、receipt 风险层统计、重复验证计数 |
+| `prompts/fixer.md` | TEST VERIFICATION PROTOCOL（receipt 格式、R0-R3、变更选择、失败分类） |
+| `prompts/observer.md` | 不重跑规则（核对 + 升层 + 抽样） |
+| `prompts/orchestrator.md` | TASK STATES & COMPLETION GATE、broker_route 说明 |
+| `src/agents/catalog.js` | 删除无引用的 `specialistById` |
+| 测试 | broker +9（注解/重复/状态/审查阻断/预算）、mount 探针断言、delegation 导入断言 |
+
+## 验证
+
+```
+npm test        → 159/159 通过（原 150）
+npm run build   → 产物含 policy.mjs；REPRO 可复现
+npm run validate→ OK
+npm run smoke   → 16 tools；gateDenied/envelopeBlocked/askSerialized=true，routeAdvice=explorer
+status/metrics  → 任务状态 [COMPLETE]/[BLOCKED]/[IMPLEMENTED]、重复验证计数、R1-R3 分层统计 实测 ✅
+```
+
+## 剩余边界（如实）
+
+- 完成门禁是**观测 + prompt 纪律**（broker 显示状态、prompt 强制遵守），
+  不是宿主级"完成即停"；真正的完成事件仍需模型声明。
+- receipt 预算与重复标记是**记录/警告级**（broker 看不到子代理内部执行的
+  每个命令，只能看到 VERIFICATION/OBSERVED 里报告的）。
+- 风险分层与测试选择是 Fixer 的 prompt 规则 + receipt 记录，不是对子代理
+  shell 的机械拦截（宿主权限层不支持）。

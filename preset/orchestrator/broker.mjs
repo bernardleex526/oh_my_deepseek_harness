@@ -57,7 +57,14 @@ export const DEFAULT_BUDGETS = {
 	/** Max attempts of one specialist on one task (1 initial + 2 retries). */
 	maxAttemptsPerSpecialist: 3,
 	/** Consecutive non-SUCCESS results per task before the gate hard-stops. */
-	maxConsecutiveFailures: 3
+	maxConsecutiveFailures: 3,
+	/**
+	 * REPORT-ONLY receipt budget: VERIFICATION/OBSERVED entries reported per
+	 * task. Not a mechanical gate (the broker cannot see commands the
+	 * specialists run internally), but broker_status warns once exceeded so
+	 * runaway test commands become visible.
+	 */
+	maxReceiptsPerTask: 12
 };
 
 /** Env var carrying a JSON budget override (e.g. {"maxDelegationsPerTask":20}). */
@@ -97,6 +104,38 @@ export function isDelegationTool(name) {
 /** Map a specialist tool name back to its role id. */
 export function specialistId(toolName) {
 	return toolName.startsWith("subagent_") ? toolName.slice("subagent_".length) : toolName;
+}
+
+/**
+ * Derive a task's mechanical state from its recorded results.
+ *
+ * PLANNED → RUNNING → IMPLEMENTED → VERIFIED → COMPLETE, with the audit's
+ * review loop closed mechanically:
+ * - a task becomes IMPLEMENTED once a Fixer SUCCESS is recorded;
+ * - VERIFIED once an Observer SUCCESS is also recorded;
+ * - COMPLETE when verified AND (no Oracle was consulted OR the latest Oracle
+ *   result is SUCCESS);
+ * - **BLOCKED when the latest Oracle result is BLOCKED** — the review
+ *   failure closes the loop: further delegations on that TASK_ID are denied
+ *   by the gate until the Orchestrator reopens the problem under a new id.
+ *
+ * @param {object} task - a task state (results, attempts, …).
+ * @returns {"PLANNED" | "RUNNING" | "IMPLEMENTED" | "VERIFIED" | "REVIEWED" | "COMPLETE" | "BLOCKED"}
+ */
+export function deriveTaskState(task) {
+	const results = task.results ?? [];
+	if (results.length === 0) return "PLANNED";
+	const fixerSuccess = results.some((r) => r.tool === FIXER_DELEGATION && r.status === "SUCCESS");
+	const observerSuccess = results.some((r) => r.tool === "subagent_observer" && r.status === "SUCCESS");
+	const oracleResults = results.filter((r) => r.tool === "subagent_oracle");
+	const latestOracle = oracleResults.at(-1);
+	if (latestOracle !== void 0 && latestOracle.status === "BLOCKED") return "BLOCKED";
+	if (fixerSuccess && observerSuccess) {
+		if (latestOracle === void 0 || latestOracle.status === "SUCCESS") return "COMPLETE";
+		return "VERIFIED"; // review required but not (yet) passed
+	}
+	if (fixerSuccess) return "IMPLEMENTED";
+	return "RUNNING";
 }
 
 /**
@@ -174,20 +213,69 @@ export function gitFingerprint(cwd) {
 }
 
 /**
- * Mechanically extract test receipts from a multi-line section body:
- * every `<command>: <result>` line becomes { command, result }.
+ * Parse ONE receipt line into a structured receipt.
+ *
+ * Format: `<command> [key=value,key=value]: <result>` where the bracket
+ * annotation is optional and holds machine-readable fields:
+ * - `risk=R0|R1|R2|R3`  the risk tier the command belongs to (pytest
+ *   layering: R0 docs/none, R1 targeted unit, R2 contract, R3 integration);
+ * - `exit=<code>`        the process exit code;
+ * - `counts=<n>`         e.g. number of tests in the run;
+ * - `fail=a::b;c::d`     failing nodeids, `;`-separated.
+ *
+ * Plain `<command>: <result>` lines (no annotation) still parse — the
+ * annotation is an opt-in extension.
+ * @param {string} line - one line of a VERIFICATION/OBSERVED body.
+ * @returns {{command: string, result: string, risk?: string, exit?: number,
+ *   counts?: number, fail?: string[]} | null}
+ */
+export function parseReceiptLine(line) {
+	const text = String(line);
+	// 1) annotation-anchored: `<command> [k=v,…]: <result>` — the bracket is
+	//    the anchor, so commands containing `::` (pytest nodeids) survive.
+	let m = text.match(/^([^\n]+?)\s*\[([^\]]*)\]\s*:\s*(.*)$/);
+	// 2) plain: `<command>: <result>` (command must not contain a colon).
+	if (m === null) m = text.match(/^([^:]+?):\s*(.*)$/);
+	if (m === null) return null;
+	const command = m[1].trim();
+	if (command === "" || /^[A-Z_]+$/.test(command)) return null; // section headers, not commands
+	const receipt = { command, result: m[m.length - 1].trim() };
+	const annotation = m[2] ?? "";
+	for (const pair of annotation.split(",")) {
+		const eq = pair.indexOf("=");
+		if (eq < 0) continue;
+		const key = pair.slice(0, eq).trim();
+		const value = pair.slice(eq + 1).trim();
+		if (key === "risk" && /^R[0-3]$/i.test(value)) receipt.risk = value.toUpperCase();
+		else if (key === "exit" && /^-?\d+$/.test(value)) receipt.exit = Number(value);
+		else if (key === "counts" && /^\d+$/.test(value)) receipt.counts = Number(value);
+		else if (key === "fail" && value !== "") receipt.fail = value.split(";").map((s) => s.trim()).filter(Boolean);
+	}
+	return receipt;
+}
+
+/**
+ * Whether a receipt counts as a SUCCESSFUL verification (for dedupe):
+ * an explicit `exit=0`, or a result text that reads as a pass.
+ * @param {object} receipt - a parsed receipt.
+ * @returns {boolean}
+ */
+export function receiptSucceeded(receipt) {
+	if (receipt.exit !== void 0) return receipt.exit === 0;
+	return /pass|clean|ok|success/i.test(receipt.result);
+}
+
+/**
+ * Mechanically extract test receipts from a multi-line section body.
  * @param {string} sectionText - the raw section body (VERIFICATION/OBSERVED).
- * @returns {Array<{command: string, result: string}>}
+ * @returns {Array<object>} parsed receipts.
  */
 export function extractReceipts(sectionText) {
 	const text = String(sectionText ?? "");
 	const receipts = [];
 	for (const line of text.split(/\r?\n/)) {
-		const m = line.match(/^\s*(.+?):\s*(.*)$/);
-		if (m === null) continue;
-		const command = m[1].trim();
-		if (command === "" || /^[A-Z_]+$/.test(command)) continue; // section headers, not commands
-		receipts.push({ command, result: m[2].trim() });
+		const receipt = parseReceiptLine(line);
+		if (receipt !== null) receipts.push(receipt);
 	}
 	return receipts;
 }
@@ -223,7 +311,10 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 						delegationsUsed: Number.isSafeInteger(t.delegationsUsed) ? t.delegationsUsed : 0,
 						attempts: new Map(Object.entries(t.attempts ?? {})),
 						consecutiveFailures: Number.isSafeInteger(t.consecutiveFailures) ? t.consecutiveFailures : 0,
-						results: Array.isArray(t.results) ? t.results : []
+						results: Array.isArray(t.results) ? t.results : [],
+						receipts: Array.isArray(t.receipts) ? t.receipts : [],
+						workspaceFingerprint: typeof t.workspaceFingerprint === "string" ? t.workspaceFingerprint : null,
+						duplicateReceipts: Number.isSafeInteger(t.duplicateReceipts) ? t.duplicateReceipts : 0
 					});
 				}
 				sessions.set(session, { tasks });
@@ -241,7 +332,10 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 				delegationsUsed: 0,
 				attempts: new Map(), // toolName -> completed attempts
 				consecutiveFailures: 0,
-				results: [] // { at, tool, status, summary, errors, warnings, receipts? }
+				results: [], // { at, tool, status, summary, errors, warnings, receipts?, fingerprint? }
+				receipts: [], // accumulated receipts across the task (dedupe/replay)
+				workspaceFingerprint: null, // last known fixer after-fingerprint
+				duplicateReceipts: 0
 			};
 			s.tasks.set(taskId, task);
 		}
@@ -258,7 +352,10 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 				delegationsUsed: t.delegationsUsed,
 				attempts: Object.fromEntries(t.attempts),
 				consecutiveFailures: t.consecutiveFailures,
-				results: t.results
+				results: t.results,
+				receipts: t.receipts,
+				workspaceFingerprint: t.workspaceFingerprint,
+				duplicateReceipts: t.duplicateReceipts
 			}))
 		});
 	}
@@ -282,6 +379,16 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 				};
 			}
 			const task = taskState(session, taskId);
+			// Review-failure loop closure: an Oracle BLOCKED result blocks ALL
+			// further delegations on this TASK_ID until the Orchestrator
+			// reopens the problem under a NEW id with the corrected approach.
+			if (deriveTaskState(task) === "BLOCKED") {
+				return {
+					ok: false,
+					kind: "review",
+					reason: `review blocked: Oracle returned BLOCKED on task "${taskId}" — do NOT keep delegating on this id; open a NEW TASK_ID with the corrected approach, or stop and report.`
+				};
+			}
 			if (task.delegationsUsed >= cap.maxDelegationsPerTask) {
 				return {
 					ok: false,
@@ -439,7 +546,7 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 				summary: parsed.summary,
 				taskId: envelopeTask,
 				errors,
-				warnings: parsed.warnings,
+				warnings: [...parsed.warnings],
 				receipts,
 				callIndex
 			};
@@ -448,6 +555,33 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 					before: baseline,
 					after: gitFingerprint(exec?.agent?.session?.header?.cwd ?? process.cwd())
 				};
+				if (typeof record.fingerprint.after === "string") {
+					task.workspaceFingerprint = record.fingerprint.after;
+				}
+			}
+			// Duplicate-verification detection (pytest dedupe): a receipt whose
+			// command already has a SUCCESS receipt on this task, recorded at
+			// the SAME workspace fingerprint, is a re-run we flag so the
+			// Orchestrator can see verification was repeated, not added.
+			const fpNow = task.workspaceFingerprint;
+			for (const receipt of receipts) {
+				const prior = task.receipts.find((p) => p.command === receipt.command && p.success === true);
+				if (prior !== void 0 && prior.fingerprint !== null && fpNow !== null && prior.fingerprint === fpNow) {
+					receipt.duplicate = true;
+					task.duplicateReceipts += 1;
+					record.warnings.push(`duplicate verification: "${receipt.command}" was already verified at this workspace fingerprint (receipt #${prior.index}) — cite it instead of re-running`);
+				}
+				task.receipts.push({
+					...receipt,
+					tool,
+					at: record.at,
+					fingerprint: fpNow,
+					success: receiptSucceeded(receipt),
+					index: task.receipts.length
+				});
+			}
+			if (task.receipts.length > cap.maxReceiptsPerTask) {
+				record.warnings.push(`receipt budget exceeded: ${task.receipts.length}/${cap.maxReceiptsPerTask} commands reported on task "${taskId}" — prefer citing existing receipts over re-running`);
 			}
 			task.attempts.set(tool, (task.attempts.get(tool) ?? 0) + 1);
 			task.delegationsUsed += 1;
@@ -480,14 +614,23 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 		 */
 		report(session, { taskId, includeArtifacts = false } = {}) {
 			const lines = ["Orchestration broker state:"];
-			lines.push(`- budgets: ${cap.maxDelegationsPerTask} delegations/task, ${cap.maxAttemptsPerSpecialist} attempts/specialist/task, ${cap.maxConsecutiveFailures} consecutive failures`);
+			lines.push(`- budgets: ${cap.maxDelegationsPerTask} delegations/task, ${cap.maxAttemptsPerSpecialist} attempts/specialist/task, ${cap.maxConsecutiveFailures} consecutive failures, ${cap.maxReceiptsPerTask} receipts/task (report-only)`);
 			const s = sessions.get(session);
 			const tasks = s === void 0 ? [] : [...s.tasks.values()].filter((t) => taskId === void 0 || t.taskId === taskId);
 			if (tasks.length === 0) {
 				lines.push("- no delegations recorded yet");
 			} else {
 				for (const task of tasks) {
-					lines.push(`- task "${task.taskId}": ${task.delegationsUsed}/${cap.maxDelegationsPerTask} delegations, ${task.consecutiveFailures} consecutive non-SUCCESS`);
+					const state = deriveTaskState(task);
+					const dup = task.duplicateReceipts > 0 ? `, ${task.duplicateReceipts} duplicate verification(s)` : "";
+					lines.push(`- task "${task.taskId}" [${state}]: ${task.delegationsUsed}/${cap.maxDelegationsPerTask} delegations, ${task.consecutiveFailures} consecutive non-SUCCESS, ${task.receipts.length}/${cap.maxReceiptsPerTask} receipts${dup}`);
+					if (state === "COMPLETE") {
+						lines.push("  - COMPLETE: fixer implemented, observer verified, review satisfied — reporting completion is now allowed");
+					} else if (state === "BLOCKED") {
+						lines.push("  - BLOCKED: the latest Oracle review returned BLOCKED — do NOT keep delegating on this TASK_ID; reopen under a NEW id");
+					} else if (state === "VERIFIED") {
+						lines.push("  - VERIFIED: an Oracle review is required but not passed yet — completion must wait");
+					}
 					for (const [tool, count] of task.attempts) {
 						lines.push(`  - ${tool}: ${count}/${cap.maxAttemptsPerSpecialist} attempts`);
 					}
@@ -522,7 +665,11 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 					delegationsUsed: t.delegationsUsed,
 					attempts: Object.fromEntries(t.attempts),
 					consecutiveFailures: t.consecutiveFailures,
-					results: t.results.map((r) => ({ ...r }))
+					results: t.results.map((r) => ({ ...r })),
+					receipts: t.receipts.map((r) => ({ ...r })),
+					workspaceFingerprint: t.workspaceFingerprint,
+					duplicateReceipts: t.duplicateReceipts,
+					state: deriveTaskState(t)
 				}))
 			};
 		},

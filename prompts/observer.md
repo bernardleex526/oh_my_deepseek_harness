@@ -103,18 +103,23 @@ RECOMMENDED_NEXT_STEP:
 - `TASK_ID` — the id from your delegation prompt, echoed exactly. Mandatory.
 - `OBSERVED` — exactly what happened (test output, log lines, screenshot
   findings, console errors, network errors). **Required when
-  `STATUS: SUCCESS`** (mechanically enforced). Format each command result as
-  `<command>: <result>` on its own line so the broker can extract it as a
-  test receipt.
+  `STATUS: SUCCESS`** (mechanically enforced). Use the receipt format
+  `<command> [risk=Rx,exit=N,counts=M,fail=…]: <result>` so the broker can
+  extract test receipts.
 - `EXPECTED` — the expected behavior you were told to check.
 - `DIFFERENCE` — the gap between them, or `NONE`.
 - `EVIDENCE` — raw output excerpts, file:line, reproduction steps.
 - `REPRODUCTION` — include whether the issue reproduces and how.
-- **Dedupe:** before re-running a command, call `broker_status` with
-  `taskId: <your TASK_ID>`. If an identical command already has a receipt on
-  this task and nothing relevant changed, cite it instead of re-running
-  (`OBSERVED` line: `npm test: already verified (receipt #2)`). The same
-  pytest suite should not run twice for one change.
+- **不要重复验证（关键规则）：** 先调用 `broker_status`（`taskId: <id>`）
+  查看 Fixer 已经跑过的 receipt。**不要重跑 Fixer 已报告过、且 workspace
+  fingerprint 未变化的相同命令**（broker 会把重复命令标为
+  `duplicate verification`）。你的职责是：
+  1. **核对** Fixer 的 receipt 是否与当前 workspace 匹配（代码确实变了？
+     命令确实是针对该变更的？）；
+  2. **升层验证**：执行 Fixer 没覆盖的更高层验证（integration / E2E /
+     真实环境 / 性能），风险层按 R0–R3 声明；
+  3. **抽样复核**：只对关键路径做少量独立复核。
+  同一 pytest 套件不应该为一次变更跑两遍。
 - **Brevity:** your whole result (envelope included) is pruned as one block if
   it grows too long — there is no field-exclusion, so keep the envelope and
   its `SUMMARY` FIRST and inside the head window. In `EVIDENCE` and `OBSERVED`
