@@ -148,6 +148,43 @@ node scripts/smoke-mount.mjs  # 真实启动 harness 并挂载 preset 的集成�
 
 ---
 
+## 客户端插件：轨迹计数器（We need… vs Let me…）
+
+融合 dsh-anchored-standard 的测量口径后，会话的「首行轨迹」现在可以直接在
+界面上看到：
+
+- **位置**：与宿主状态行（`10 轮 · 396 步 | LLM … | 首 token 平均 … |
+  缓存命中 … | 输入/输出 tok`）**同一条 composer dock**，紧随其后渲染；
+- **内容**：`We need… 12 (63%) · Let me… 3 (16%) · 其他 4 (21%)`，绿/琥珀/灰
+  圆点区分，hover 显示完整明细；随会话实时更新；
+- **口径**：当前会话每条 `assistant/message` 的**首行**分类
+  （`We need/We've/We're…` → we；`Let me/Let's…` → let；其余 → other），
+  与 dsh-anchored-standard 的轨迹测量一致——直接观察锚定/晋升后的风格分布；
+- **实现**：`client/trajectory-counter/`（npm 包 `dsh-trajectory-counter`）：
+  客户端插件（`dsh.client` 声明 + `__ModuleLoader__` bundle），注册到
+  `conversation.composer.dock` 槽（id `trajectory-counter`，order 10，紧随
+  宿主 stats 之后）；分类逻辑在 `src/classify.js`（纯函数，单测覆盖），
+  bundle 由 `scripts/build-client.mjs` 生成（可复现，测试门禁）。
+
+### 安装客户端插件
+
+```powershell
+npm run build:client                        # 生成 client/trajectory-counter/client/client.js
+node scripts/install-client-plugin.mjs      # 复制包到部署的 node_modules（支持 --checkout 指定）
+```
+
+然后（宿主只为**已注册的 loader 条目**服务客户端 bundle）：
+
+1. 在部署中注册 `dsh-trajectory-counter` 插件条目（部署的插件管理 /
+   `dsh plugin`，或启动配置加一行）；
+2. **重启 DeepSeek Harness**；
+3. 验证 boot manifest 出现 `/plugins/dsh-trajectory-counter/client.js`；
+4. 打开会话，composer dock 的状态行旁即可看到计数。
+
+槽名 `conversation.composer.dock` 与 rc.6 运行实例的 conversation 包逐字核对
+一致（该槽即宿主 StatsLine 的注册位置）。若未来宿主升级改名，只需同步
+`src/component.cjs` 中的槽名并重新 build。
+
 ## 详细使用说明
 
 ### 1. 工作流

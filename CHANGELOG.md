@@ -1,5 +1,25 @@
 # 更新说明 / CHANGELOG
 
+## v0.1.5（2026-08-16）— 轨迹计数器客户端插件（We need… vs Let me…）
+
+测试由 175 项增至 186 项，全部通过。
+
+### 客户端插件：dsh-trajectory-counter
+
+- 新增 `client/trajectory-counter/`：npm 包（`dsh.client` 声明 + 无操作
+  服务端半部），在**会话 composer dock**（宿主 StatsLine 所在槽
+  `conversation.composer.dock`，order 10）渲染 `We need… N (P%) · Let me…
+  M (P%) · 其他 K (P%)` 实时计数——与状态行并排，直观呈现锚定/晋升后的
+  首行轨迹分布。
+- 分类口径与 dsh-anchored-standard 的测量一致：每条 `assistant/message`
+  首行 → `we`（We need/We've/We're…）/ `let`（Let me/Let's…）/ `other`；
+  分类逻辑 `src/classify.js` 为纯函数（单测覆盖），bundle 由
+  `scripts/build-client.mjs` 生成（可复现门禁 + `node:vm` 伪加载器验证
+  注册与渲染）。
+- 安装：`npm run build:client` + `node scripts/install-client-plugin.mjs`
+  （复制到部署 node_modules），随后在部署注册插件条目并重启 harness；
+  验证 `/plugins/dsh-trajectory-counter/client.js` 出现在 boot manifest。
+
 ## v0.1.4（2026-08-16）— 融合 dsh-anchored-standard：锚定首请求 + 晋升
 
 测试由 159 项增至 175 项，全部通过；validate OK；smoke 新增 **bootstrap 变体**

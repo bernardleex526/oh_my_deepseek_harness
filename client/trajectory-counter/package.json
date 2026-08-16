@@ -1,0 +1,36 @@
+{
+  "name": "dsh-trajectory-counter",
+  "version": "0.1.0",
+  "description": "Client plugin for the oh_my_deepseek_harness orchestrator: live 'We need… vs Let me…' first-line trajectory counter rendered in the conversation composer dock, next to the host stats line.",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./client/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "files": [
+    "lib/",
+    "client/"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bernardleex526/oh_my_deepseek_harness.git"
+  }
+}
