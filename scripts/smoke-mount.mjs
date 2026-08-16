@@ -30,6 +30,7 @@ import { createRequire } from "node:module";
 import { PRESET_ID } from "../src/config/defaults.js";
 import { SPECIALISTS } from "../src/agents/catalog.js";
 import { SUBAGENT_TOOLS, ORCHESTRATOR_ALLOW } from "../src/permissions/agent-permissions.js";
+import { DEFAULT_BOOTSTRAP_ALLOW } from "../src/orchestration/bootstrap.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 /**
@@ -169,9 +170,19 @@ async function realChainProbes(ctx, agent, tools) {
 /**
  * Boot a minimal harness with the base bundle + agent-presets roster pointing
  * at our preset dir, then create one agent with the preset mounted.
- * @returns {Promise<{toolNames: string[], restrictionApplied: boolean, presetBroken: string | undefined, childFilterNames: number, probes: object}>}
+ *
+ * Bootstrap variant: when `SMOKE_BOOTSTRAP=1`, the environment is prepared so
+ * the preset's anchored bootstrap phase is ACTIVE — the fresh root agent must
+ * then see exactly the control-plane set (no delegation tools). The full
+ * tool-chain probes are skipped there (the fixer stub is not visible during
+ * bootstrap); the bootstrap variant proves the restriction on the real chain.
+ * @returns {Promise<{toolNames: string[], restrictionApplied: boolean, presetBroken: string | undefined, childFilterNames: number, probes: object, bootstrapMode: boolean}>}
  */
 export async function smokeMount() {
+	const bootstrapMode = process.env.SMOKE_BOOTSTRAP === "1";
+	// The preset row reads DSH_ORCHESTRATION_BOOTSTRAP at apply time (during
+	// boot below), so prepare it BEFORE booting.
+	process.env.DSH_ORCHESTRATION_BOOTSTRAP = bootstrapMode ? "1" : "0";
 	const require = createRequire(import.meta.url);
 	if (!existsSync(join(CHECKOUT, "dsh-app-boot")) || !existsSync(join(CHECKOUT, "dsh-base"))) {
 		throw new Error(
@@ -269,6 +280,24 @@ export async function smokeMount() {
 		const restrictionApplied = !toolNames.includes("write") && !toolNames.includes("edit")
 			&& !toolNames.includes("bash") && !toolNames.includes("pwsh");
 
+		if (bootstrapMode) {
+			// Anchored-bootstrap variant: the fresh root agent must see EXACTLY
+			// the control-plane set — no delegation, no web, no child catalog.
+			const expected = [...DEFAULT_BOOTSTRAP_ALLOW].sort();
+			const actual = [...toolNames].sort();
+			if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+				throw new Error(`bootstrap surface mismatch: expected ${expected.join(", ")}, got ${actual.join(", ")}`);
+			}
+			return {
+				toolNames,
+				restrictionApplied,
+				presetBroken: row?.broken,
+				childFilterNames: 0,
+				bootstrapMode: true,
+				probes: { bootstrapVisible: true }
+			};
+		}
+
 		// Every specialist's toolFilter must pass the real `tools.restrict()`
 		// name validation a child would hit at setup: restrict() rejects
 		// unknown names against the child's inherited surface. A child joins
@@ -302,6 +331,7 @@ export async function smokeMount() {
 			restrictionApplied,
 			presetBroken: row?.broken,
 			childFilterNames,
+			bootstrapMode: false,
 			probes
 		};
 	} finally {
@@ -325,6 +355,18 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 	smokeMount().then((result) => {
 		const problems = [];
 		if (result.presetBroken !== void 0) problems.push(`preset reported broken: ${result.presetBroken}`);
+		if (result.bootstrapMode) {
+			if (!result.probes.bootstrapVisible) problems.push("bootstrap surface not verified");
+			if (problems.length > 0) {
+				console.error("smoke-mount (bootstrap) FAILED:");
+				for (const p of problems) console.error(`  ✗ ${p}`);
+				process.exit(1);
+			}
+			console.log(`smoke-mount (bootstrap) OK — ${result.toolNames.length} tools visible on the FIRST request (control-plane set)`);
+			console.log("  bootstrap surface:", result.toolNames.join(", "));
+			console.log("  delegation tools hidden until promotion: verified");
+			return;
+		}
 		for (const tool of SUBAGENT_TOOLS) {
 			if (!result.toolNames.includes(tool)) problems.push(`missing delegation tool ${tool}`);
 		}

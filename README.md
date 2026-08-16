@@ -14,8 +14,11 @@ Harness 中实现“调查 → 判断 → 执行 → 验证”的完整工作流
 
 ## 更新记录（简要）
 
-> 详细变更见 [CHANGELOG.md](CHANGELOG.md)。自 `6a252cd` 起共三轮更新：
+> 详细变更见 [CHANGELOG.md](CHANGELOG.md)。自 `6a252cd` 起共四轮更新：
 
+- **v0.1.4（2026-08-16）** — 融合 dsh-anchored-standard 的**锚定首请求**：
+  新会话首个模型请求仅暴露控制平面工具，首个信号后自动晋升完整委派面；
+  `$DSH_ORCHESTRATION_BOOTSTRAP` 可关闭/自定义。
 - **v0.1.3（2026-08-16）** — 完成门禁 + 审查闭环 + pytest 分层减量 +
   `broker_route` 路由工具：任务状态自动派生
   （PLANNED → RUNNING → IMPLEMENTED → VERIFIED → COMPLETE），Oracle 复审
@@ -70,10 +73,12 @@ envelope 返回协议）均与 oh-my-opencode-slim 一脉相承，并利用 DSH 
 - 🧮 **机械编排运行时（OrchestrationBroker）**：workspace 粒度单写者锁（审批期间保持）、每 TASK_ID 预算（12 委派 / 3 尝试 / 3 连续失败硬停）、envelope 结果门禁（坏信封被 block）、`broker_status` 只读报告——全部在真实工具链上机械强制
 - ✅ **完成门禁 + 审查闭环**：broker 按记录自动派生任务状态 `PLANNED → RUNNING → IMPLEMENTED → VERIFIED → COMPLETE`；完成前必须 Fixer SUCCESS + Observer SUCCESS +（咨询过 Oracle 时）Oracle SUCCESS；**Oracle 复审 BLOCKED 会机械阻断该 TASK_ID 的全部后续委派**
 - 🧭 **`broker_route` 路由工具**：Orchestrator 可随时把子问题文本交给与提示词同源的评分模型，拿到建议角色与候选（advisory，不强制）
+- ⚓ **锚定首请求（anchored bootstrap）**：融合 [dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) 的机制——新会话的**第一个模型请求只暴露控制平面工具**（read/grep/glob/ask/todo/broker_*，8 个），首个回复或首次工具调用后自动晋升完整 16 工具面（含全部委派工具），首轮成为干净的"理解任务"回合；恢复会话与 one-shot 子代理恒不锚定。`$DSH_ORCHESTRATION_BOOTSTRAP=0` 关闭，JSON 数组自定义
 - 🧾 **测试 receipt 分层与去重**：VERIFICATION/OBSERVED 支持 `[risk=R0-R3,exit,counts,fail]` 注解；Fixer/Observer 先查 `broker_status` 避免重跑相同命令；**同 fingerprint 的重复验证被机械标记**；每任务报告式 receipt 预算（默认 12 条）；风险分层/变更测试选择/失败分类规则内嵌 Fixer prompt
 - 💾 **持久化（可选）**：设置 `$DSH_ORCHESTRATION_HOME` 后，每次委派的结果全文与解析元数据、会话状态（预算/结果/receipts/fingerprint/任务状态）自动落盘——支持崩溃恢复、任务 replay 与质量统计
 - 🧩 **自定义角色（本地构建）**：`roles.json` 声明新 specialist，`npm run build:local` 合并为额外的委派工具，隔离保证与内置六角色一致
 - 📊 **状态/指标 CLI**：`npm run status` / `npm run metrics` 从存储渲染运行状态（含任务状态与 receipt 分层）与历史质量指标
+- 🎛️ **多模型子代理**：每个 specialist（含自定义角色）可经 `model-routing.json` 独立配置 provider / model / maxTokens——Explorer 用轻量快模型、Oracle/Fixer 用强模型，互不影响
 
 ---
 
@@ -460,6 +465,11 @@ node --test tests/
   （崩溃恢复 / 任务 replay）。未设置时运行纯内存模式，不写盘。
 - **`$DSH_ORCHESTRATION_BUDGETS`**：JSON 覆盖预算上限，例如
   `{"maxDelegationsPerTask": 20, "maxConsecutiveFailures": 5}`。
+- **`$DSH_ORCHESTRATION_BOOTSTRAP`**：控制锚定首请求（默认开启）——
+  `0` / `off` 关闭；`1` / `on` 用默认控制平面集（8 个工具）；JSON 数组
+  自定义首请求工具（如 `["read","grep","ask_user_question"]`）。恢复的会话
+  与 one-shot 子代理不受影响。晋升时工具目录变化一次，KV 前缀缓存在该点
+  断开（与上游行为一致）。
 - **`npm run status [sessionId]` / `npm run metrics`**：从存储渲染单会话
   状态（任务、结果、receipts、fingerprint、artifacts）或跨会话质量指标
   （各 specialist 的 SUCCESS/PARTIAL/BLOCKED/ERROR 分布与成功率、协议
@@ -538,5 +548,7 @@ node --test tests/
 
 - [oh-my-opencode-slim](https://github.com/alvinunreal/oh-my-opencode-slim) —
   本项目的角色体系与工作流设计的灵感来源
+- [dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) —
+  锚定首请求 / 晋升机制（v0.1.4 融合）的机制与实测依据来源
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) —
   提供全部底层能力的宿主平台

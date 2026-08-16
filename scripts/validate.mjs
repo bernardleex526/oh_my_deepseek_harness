@@ -290,11 +290,13 @@ export async function validate() {
 	check(existsSync(join(PRESET_DIR, "protocol.mjs")), "preset dir missing protocol.mjs");
 	check(existsSync(join(PRESET_DIR, "artifacts.mjs")), "preset dir missing artifacts.mjs");
 	check(existsSync(join(PRESET_DIR, "policy.mjs")), "preset dir missing policy.mjs");
+	check(existsSync(join(PRESET_DIR, "bootstrap.mjs")), "preset dir missing bootstrap.mjs");
 	const rowSource = existsSync(join(PRESET_DIR, "orchestration.mjs"))
 		? readFileSync(join(PRESET_DIR, "orchestration.mjs"), "utf8")
 		: "";
 	check(rowSource.includes('from "./broker.mjs"'), "orchestration.mjs must import ./broker.mjs");
 	check(rowSource.includes('from "./policy.mjs"'), "orchestration.mjs must import ./policy.mjs");
+	check(rowSource.includes('from "./bootstrap.mjs"'), "orchestration.mjs must import ./bootstrap.mjs");
 	const brokerSource = existsSync(join(PRESET_DIR, "broker.mjs"))
 		? readFileSync(join(PRESET_DIR, "broker.mjs"), "utf8")
 		: "";
@@ -305,7 +307,8 @@ export async function validate() {
 		["broker.mjs", brokerSource],
 		["protocol.mjs", existsSync(join(PRESET_DIR, "protocol.mjs")) ? readFileSync(join(PRESET_DIR, "protocol.mjs"), "utf8") : ""],
 		["artifacts.mjs", existsSync(join(PRESET_DIR, "artifacts.mjs")) ? readFileSync(join(PRESET_DIR, "artifacts.mjs"), "utf8") : ""],
-		["policy.mjs", existsSync(join(PRESET_DIR, "policy.mjs")) ? readFileSync(join(PRESET_DIR, "policy.mjs"), "utf8") : ""]
+		["policy.mjs", existsSync(join(PRESET_DIR, "policy.mjs")) ? readFileSync(join(PRESET_DIR, "policy.mjs"), "utf8") : ""],
+		["bootstrap.mjs", existsSync(join(PRESET_DIR, "bootstrap.mjs")) ? readFileSync(join(PRESET_DIR, "bootstrap.mjs"), "utf8") : ""]
 	];
 	for (const [file, source] of moduleFiles) {
 		check(!/^\s*import\s+.*\s+from\s+["'](?!\.|node:)/m.test(source), `${file} must only import siblings and node builtins (preset dir has no node_modules)`);

@@ -63,49 +63,61 @@ test("orchestration.mjs is a dependency-free preset row (siblings + node builtin
 	assert.match(source, /from "\.\/broker\.mjs"/, "orchestration.mjs must import ./broker.mjs");
 	assert.match(source, /from "\.\/artifacts\.mjs"/, "orchestration.mjs must import ./artifacts.mjs");
 	assert.match(source, /from "\.\/policy\.mjs"/, "orchestration.mjs must import ./policy.mjs");
+	assert.match(source, /from "\.\/bootstrap\.mjs"/, "orchestration.mjs must import ./bootstrap.mjs");
 	// The sibling modules must be equally node_modules-free.
 	const brokerSource = readFileSync(join(ROOT, "src", "orchestration", "broker.mjs"), "utf8");
 	const protocolSource = readFileSync(join(ROOT, "src", "orchestration", "protocol.mjs"), "utf8");
 	const artifactsSource = readFileSync(join(ROOT, "src", "orchestration", "artifacts.mjs"), "utf8");
 	const policySource = readFileSync(join(ROOT, "src", "orchestration", "policy.mjs"), "utf8");
+	const bootstrapSource = readFileSync(join(ROOT, "src", "orchestration", "bootstrap.mjs"), "utf8");
 	assert.ok(!/^\s*import\s+.*\s+from\s+["'](?!\.|node:)/m.test(brokerSource), "broker.mjs must not import bare specifiers");
 	assert.match(brokerSource, /from "\.\/protocol\.mjs"/, "broker.mjs must import ./protocol.mjs");
 	assert.match(brokerSource, /from "\.\/artifacts\.mjs"/, "broker.mjs must import ./artifacts.mjs");
 	assert.ok(!/^\s*import\s+.*\s+from\s+["'](?!\.|node:)/m.test(artifactsSource), "artifacts.mjs must not import bare specifiers");
 	assert.ok(!/^\s*import\s+.*\s+from\s+["'](?!\.|node:)/m.test(policySource), "policy.mjs must not import bare specifiers");
+	assert.ok(!/^\s*import\b/m.test(bootstrapSource), "bootstrap.mjs must be import-free");
 	assert.ok(!/^\s*import\b/m.test(protocolSource), "protocol.mjs must be import-free");
 });
 
 test("orchestration row restricts only the ROOT agent (not children)", async () => {
-	const restricted = [];
-	const tools = {
-		restrict(filter) {
-			restricted.push(filter);
-		}
-	};
-	const listeners = {};
-	const ctx = {
-		on(event, handler) {
-			listeners[event] = handler;
-		}
-	};
-	apply(ctx);
+	// Pin the anchored bootstrap OFF: this test asserts the classic boundary,
+	// where the root gets the FULL orchestrator allow-list at creation.
+	const before = process.env.DSH_ORCHESTRATION_BOOTSTRAP;
+	process.env.DSH_ORCHESTRATION_BOOTSTRAP = "0";
+	try {
+		const restricted = [];
+		const tools = {
+			restrict(filter) {
+				restricted.push(filter);
+			}
+		};
+		const listeners = {};
+		const ctx = {
+			on(event, handler) {
+				listeners[event] = handler;
+			}
+		};
+		apply(ctx);
 
-	const rootAgent = {
-		session: { header: { parentSession: void 0 } },
-		ctx: { get: () => tools }
-	};
-	const childAgent = {
-		session: { header: { parentSession: "session-parent" } },
-		ctx: { get: () => tools }
-	};
+		const rootAgent = {
+			session: { header: { parentSession: void 0 } },
+			ctx: { get: () => tools }
+		};
+		const childAgent = {
+			session: { header: { parentSession: "session-parent" } },
+			ctx: { get: () => tools }
+		};
 
-	assert.equal(typeof listeners["agent/created"], "function");
-	listeners["agent/created"]({ agent: childAgent });
-	listeners["agent/created"]({ agent: rootAgent });
+		assert.equal(typeof listeners["agent/created"], "function");
+		listeners["agent/created"]({ agent: childAgent });
+		listeners["agent/created"]({ agent: rootAgent });
 
-	assert.equal(restricted.length, 1, "only the root agent must be restricted");
-	assert.deepEqual(restricted[0].allow.sort(), [...ORCHESTRATOR_ALLOW].sort());
+		assert.equal(restricted.length, 1, "only the root agent must be restricted");
+		assert.deepEqual(restricted[0].allow.sort(), [...ORCHESTRATOR_ALLOW].sort());
+	} finally {
+		if (before === void 0) delete process.env.DSH_ORCHESTRATION_BOOTSTRAP;
+		else process.env.DSH_ORCHESTRATION_BOOTSTRAP = before;
+	}
 });
 
 test("orchestrator boundary includes every delegation tool", () => {

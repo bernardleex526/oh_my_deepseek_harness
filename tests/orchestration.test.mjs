@@ -24,14 +24,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { apply, broker, ORCHESTRATOR_ALLOW } from "../src/orchestration/orchestration.mjs";
+import { DEFAULT_BOOTSTRAP_ALLOW } from "../src/orchestration/bootstrap.mjs";
 
 const FIXER = "subagent_fixer";
 const EXPLORER = "subagent_explorer";
 const PROMPT = "TASK_ID: t1\nDo the thing.";
+const BOOTSTRAP_ENV = "DSH_ORCHESTRATION_BOOTSTRAP";
 
 // The module-level broker instance is shared across every apply() in this
-// file; reset its state between cases so tokens/budgets cannot leak.
-test.beforeEach(() => broker.reset());
+// file; reset its state between cases so tokens/budgets cannot leak. The
+// bootstrap phase defaults ON via env, so pin it OFF for the classic
+// boundary tests; bootstrap-specific cases set it explicitly per test.
+const ORIG_BOOTSTRAP_ENV = process.env[BOOTSTRAP_ENV];
+test.beforeEach(() => {
+	broker.reset();
+	process.env[BOOTSTRAP_ENV] = "0";
+});
+test.after(() => {
+	if (ORIG_BOOTSTRAP_ENV === void 0) delete process.env[BOOTSTRAP_ENV];
+	else process.env[BOOTSTRAP_ENV] = ORIG_BOOTSTRAP_ENV;
+});
 
 /** Build a fake Cordis `(exec, next)` listener to mock the `next()` delegate. */
 function makeNext(decision) {
@@ -50,16 +62,21 @@ function throwingNext(message = "boom") {
  * stored handlers, and shut the module state down for reuse.
  * @returns {{ctx: object, listeners: Record<string, Function>, handler(name: string): Function}}
  */
-function bootFakeCtx({ withTools = true, defineToolsUnavailable = false } = {}) {
+function bootFakeCtx({ withTools = true, defineToolsUnavailable = false, restrictThrowsOnce = false } = {}) {
 	const restricted = [];
+	const lifted = [];
 	const listeners = {};
 	let tools;
 	if (defineToolsUnavailable) {
 		tools = void 0; // simulate `ctx.get("tools")` returning undefined
 	} else {
+		let restrictCalls = 0;
 		tools = {
 			restrict(filter) {
+				restrictCalls += 1;
+				if (restrictThrowsOnce && restrictCalls === 1) throw new Error("restrict exploded");
 				restricted.push(filter);
+				return () => lifted.push(filter); // the disposer that lifts this restriction
 			}
 			// NOTE: `register` is intentionally absent — the broker_status
 			// registration must degrade silently when the registry is not
@@ -77,10 +94,11 @@ function bootFakeCtx({ withTools = true, defineToolsUnavailable = false } = {}) 
 		},
 		logger: {
 			error: (msg) => errors.push(msg),
-			warn: () => {}
+			warn: (msg) => errors.push(msg)
 		},
-		// test-only accessor to inspect what was restricted
+		// test-only accessors
 		__restricted: restricted,
+		__lifted: lifted,
 		__errors: errors
 	};
 	apply(ctx);
@@ -456,4 +474,132 @@ test("protocol: non-delegation tools are not subject to the TASK_ID gate", async
 	const onPre = handler("tools/pre-execute");
 	const decision = await onPre({ name: "read", token: "token-R" }, makeNext({ kind: "allow" }));
 	assert.equal(decision.kind, "allow");
+});
+
+// ── anchored bootstrap (dsh-anchored-standard fusion) ─────────────────────
+
+/** A root-agent fake whose ctx can register listeners (needed by bootstrap). */
+function fakeRootAgent(ctx, { events = [] } = {}) {
+	const agentListeners = {};
+	return {
+		session: { header: { parentSession: void 0 }, events },
+		ctx: {
+			get: ctx.get,
+			on(event, handler) {
+				(agentListeners[event] ??= []).push(handler);
+				return () => {
+					agentListeners[event] = (agentListeners[event] ?? []).filter((h) => h !== handler);
+				};
+			}
+		},
+		__agentListeners: agentListeners
+	};
+}
+
+test("bootstrap: a fresh root agent is restricted to the control-plane set", () => {
+	process.env[BOOTSTRAP_ENV] = "1";
+	const { ctx, handler } = bootFakeCtx();
+	const agent = fakeRootAgent(ctx);
+	handler("agent/created")({ agent });
+	assert.equal(ctx.__restricted.length, 1, "bootstrap restrict must be the only one at creation");
+	const allow = ctx.__restricted[0].allow.sort();
+	assert.deepEqual(allow, [...DEFAULT_BOOTSTRAP_ALLOW].sort(), "request #1 must see only the control-plane tools");
+	// the promotion pre-step listener must be registered on the agent scope
+	assert.ok(Array.isArray(agent.__agentListeners["agent/pre-step"]) && typeof agent.__agentListeners["agent/pre-step"][0] === "function");
+});
+
+test("bootstrap: the second pre-step promotes to the full allow-list", async () => {
+	process.env[BOOTSTRAP_ENV] = "1";
+	const { ctx, handler } = bootFakeCtx();
+	const agent = fakeRootAgent(ctx);
+	handler("agent/created")({ agent });
+	const onPreStep = agent.__agentListeners["agent/pre-step"][0];
+
+	// request #1: no promotion yet, bootstrap restriction still active
+	await onPreStep({ agent }, makeNext({ kind: "enter", messages: [] }));
+	assert.equal(ctx.__restricted.length, 1);
+
+	// request #2: promote — lift the bootstrap restriction, apply the full list
+	await onPreStep({ agent }, makeNext({ kind: "enter", messages: [] }));
+	assert.equal(ctx.__lifted.length, 1, "bootstrap restriction must be lifted on promotion");
+	assert.equal(ctx.__restricted.length, 2);
+	assert.deepEqual(ctx.__restricted[1].allow.sort(), [...ORCHESTRATOR_ALLOW].sort());
+});
+
+test("bootstrap: the first pre-step strips agent-instructions injections", async () => {
+	process.env[BOOTSTRAP_ENV] = "1";
+	const { ctx, handler } = bootFakeCtx();
+	const agent = fakeRootAgent(ctx);
+	handler("agent/created")({ agent });
+	const onPreStep = agent.__agentListeners["agent/pre-step"][0];
+
+	const decision = {
+		kind: "enter",
+		messages: [
+			{ type: "text", text: "user task", source: { kind: "user" } },
+			{ type: "text", text: "AGENTS.md digest", source: { kind: "agent-instructions" } },
+			{ type: "text", text: "skill reminder", source: { kind: "skill-catalog" } }
+		]
+	};
+	const out = await onPreStep({ agent }, makeNext(decision));
+	assert.equal(out.messages.length, 1, "automatic injections must be stripped on the first request");
+	assert.equal(out.messages[0].source.kind, "user");
+});
+
+test("bootstrap: after promotion the pre-step keeps injected context", async () => {
+	process.env[BOOTSTRAP_ENV] = "1";
+	const { ctx, handler } = bootFakeCtx();
+	const agent = fakeRootAgent(ctx);
+	handler("agent/created")({ agent });
+	const onPreStep = agent.__agentListeners["agent/pre-step"][0];
+	await onPreStep({ agent }, makeNext({ kind: "enter", messages: [] })); // request #1 (promotes? no — step 1)
+	await onPreStep({ agent }, makeNext({ kind: "enter", messages: [] })); // request #2 promotes
+
+	const decision = {
+		kind: "enter",
+		messages: [
+			{ type: "text", text: "user task", source: { kind: "user" } },
+			{ type: "text", text: "AGENTS.md digest", source: { kind: "agent-instructions" } }
+		]
+	};
+	const out = await onPreStep({ agent }, makeNext(decision)); // post-promotion step
+	assert.equal(out.messages.length, 2, "injected context must be restored after promotion");
+});
+
+test("bootstrap: resumed sessions get the full catalog immediately (durable signals)", () => {
+	process.env[BOOTSTRAP_ENV] = "1";
+	const { ctx, handler } = bootFakeCtx();
+	const agent = fakeRootAgent(ctx, { events: [{ type: "tool/call", data: {} }] });
+	handler("agent/created")({ agent });
+	assert.equal(ctx.__restricted.length, 1);
+	assert.deepEqual(ctx.__restricted[0].allow.sort(), [...ORCHESTRATOR_ALLOW].sort(), "resume must skip bootstrap");
+});
+
+test("bootstrap: children are never bootstrapped (one-shot specialists)", () => {
+	process.env[BOOTSTRAP_ENV] = "1";
+	const { ctx, handler } = bootFakeCtx();
+	const child = {
+		session: { header: { parentSession: "session-root" }, events: [] },
+		ctx: { get: ctx.get }
+	};
+	handler("agent/created")({ agent: child });
+	assert.equal(ctx.__restricted.length, 0, "children get no root boundary at all — their role filter comes from the delegation toolFilter");
+});
+
+test("bootstrap: a restriction failure degrades to the full catalog with a warning", () => {
+	process.env[BOOTSTRAP_ENV] = "1";
+	const { ctx, handler } = bootFakeCtx({ restrictThrowsOnce: true });
+	const agent = fakeRootAgent(ctx);
+	assert.doesNotThrow(() => handler("agent/created")({ agent }));
+	assert.equal(ctx.__restricted.length, 1);
+	assert.deepEqual(ctx.__restricted[0].allow.sort(), [...ORCHESTRATOR_ALLOW].sort(), "must fall back to the full surface");
+	assert.ok(ctx.__errors.length >= 1, "the degradation must be logged");
+});
+
+test("bootstrap: disabled via env '0' keeps the full catalog from request #1", () => {
+	process.env[BOOTSTRAP_ENV] = "0";
+	const { ctx, handler } = bootFakeCtx();
+	const agent = fakeRootAgent(ctx);
+	handler("agent/created")({ agent });
+	assert.deepEqual(ctx.__restricted[0].allow.sort(), [...ORCHESTRATOR_ALLOW].sort());
 });

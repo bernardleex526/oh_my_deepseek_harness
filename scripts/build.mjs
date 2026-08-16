@@ -291,6 +291,7 @@ export function build() {
 	const protocolPath = join(PRESET_DIR, "protocol.mjs");
 	const artifactsPath = join(PRESET_DIR, "artifacts.mjs");
 	const policyPath = join(PRESET_DIR, "policy.mjs");
+	const bootstrapPath = join(PRESET_DIR, "bootstrap.mjs");
 	// Dist builds never read model-routing.json/roles.json; local builds do.
 	writeFileSync(compositionPath, renderComposition(ROOT, { readRoutes: mode === "local", readRoles: mode === "local" }), "utf8");
 	writeFileSync(metadataPath, renderPresetMetadata() + "\n", "utf8");
@@ -299,7 +300,8 @@ export function build() {
 	copyFileSync(join(ROOT, "src", "orchestration", "protocol.mjs"), protocolPath);
 	copyFileSync(join(ROOT, "src", "orchestration", "artifacts.mjs"), artifactsPath);
 	copyFileSync(join(ROOT, "src", "orchestration", "policy.mjs"), policyPath);
-	return { written: [compositionPath, metadataPath, rowPath, brokerPath, protocolPath, artifactsPath, policyPath], mode };
+	copyFileSync(join(ROOT, "src", "orchestration", "bootstrap.mjs"), bootstrapPath);
+	return { written: [compositionPath, metadataPath, rowPath, brokerPath, protocolPath, artifactsPath, policyPath, bootstrapPath], mode };
 }
 
 // Allow both `import { build }` (tests) and `node scripts/build.mjs`.

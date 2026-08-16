@@ -1,5 +1,40 @@
 # 更新说明 / CHANGELOG
 
+## v0.1.4（2026-08-16）— 融合 dsh-anchored-standard：锚定首请求 + 晋升
+
+测试由 159 项增至 175 项，全部通过；validate OK；smoke 新增 **bootstrap 变体**
+（`SMOKE_BOOTSTRAP=1` 独立进程验证真实链上首请求仅 8 个控制平面工具）。
+
+### 锚定首请求（anchored bootstrap）
+
+- 融合 [dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard)
+  的核心机制（其实测表明首请求可见的工具 schema 决定会话轨迹质量），原生
+  实现于 `src/orchestration/bootstrap.mjs`（随 preset 发布，import-free）：
+- **新会话首请求只暴露控制平面工具**（`DEFAULT_BOOTSTRAP_ALLOW`：
+  read/read_image/grep/glob/ask_user_question/todo_write/broker_status/
+  broker_route），无委派工具、无 web_search——首轮成为干净的"理解任务"回合；
+- **晋升**：第二个 `agent/pre-step`（即首请求完成后的下一个模型请求——
+  `either` 语义：工具调用或纯文本回复都晋升）用 restrict disposer 交换到完整
+  `ORCHESTRATOR_ALLOW`；
+- **首请求剥离自动注入**（`agent-instructions`/`skill-catalog` source.kind），
+  晋升后恢复——对应上游杠杆 3；
+- **恢复会话恒不锚定**（事件日志已有 `tool/call` 或 `assistant/message` 即
+  直接完整面）；**one-shot 子代理恒不锚定**（单请求即全角色过滤器，同上游
+  "子代理无条件晋升"）；
+- **健壮性**：bootstrap restrict 失败降级为完整面并告警；上下文剥离失败
+  降级为保留全部消息（与上游同规则）。
+- 配置：`$DSH_ORCHESTRATION_BOOTSTRAP`——默认开启；`0`/`off` 关闭；JSON
+  数组自定义首请求工具。晋升时工具目录变化一次，KV 前缀缓存在该点断开
+  （与上游一致，已文档化）。
+
+### 其他
+
+- smoke-mount 支持 `SMOKE_BOOTSTRAP=1` 变体（独立进程，因 preset 行在
+  apply 时读 env 且模块按进程缓存）；`tests/bootstrap-smoke.test.mjs` 跨进程
+  断言真实链首请求工具面。
+- 提示词新增 BOOTSTRAP PHASE 说明；README 增加多模型子代理与 bootstrap
+  配置说明、致谢 dsh-anchored-standard。
+
 ## v0.1.3（2026-08-16）— 完成门禁 + 审查闭环 + pytest 分层减量 + broker_route
 
 测试由 150 项增至 159 项，全部通过；validate OK；smoke 真实链探针新增

@@ -3,8 +3,8 @@
 - 审计快照：`bernardleex526/oh_my_deepseek_harness@6a252cd`（main）
 - 核验/修改环境：Windows 11 + Node 24.16，DSH `@deepseek-ai/dsh@0.1.0-rc.6`
   真实安装（`C:\Users\bernard\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh`）
-- 修改后：测试 **159/159 通过**（原 92；P0 轮 126，P1/P2 轮 150，附录 B 轮 159），
-  `validate` OK，`smoke` 真实链探针全绿（`docs/` 附录 A、B 记录各轮）
+- 修改后：测试 **175/175 通过**（原 92；P0 轮 126，P1/P2 轮 150，附录 B 轮 159，
+  附录 C 轮 175），`validate` OK，`smoke` 真实链探针全绿（`docs/` 附录 A/B/C 记录各轮）
 
 ---
 
@@ -275,3 +275,62 @@ status/metrics  → 任务状态 [COMPLETE]/[BLOCKED]/[IMPLEMENTED]、重复验�
   每个命令，只能看到 VERIFICATION/OBSERVED 里报告的）。
 - 风险分层与测试选择是 Fixer 的 prompt 规则 + receipt 记录，不是对子代理
   shell 的机械拦截（宿主权限层不支持）。
+
+---
+
+# 附录 C：融合 dsh-anchored-standard 的锚定首请求（2026-08-16，v0.1.4）
+
+## 来源与本地方案
+
+参考仓库 [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard)
+实测：首请求 API 可见的工具 schema 决定会话首轮轨迹质量（Minimal 工具对
+5/5 锚定 vs standard 系 11/11 落入 standard-like）。其机制为
+bootstrap（首请求最小工具）→ 首个持久信号 → 晋升（resident 目录）。
+
+融合实现（非搬运：未复制其代码，按其机制在 DSH rc.6 上原生实现）：
+
+| 上游要素 | 本地实现 |
+|---|---|
+| 首请求最小工具 schema | `DEFAULT_BOOTSTRAP_ALLOW`（8 个控制平面工具：read/read_image/grep/glob/ask_user_question/todo_write/broker_status/broker_route）——Orchestrator 无 shell 设计，锚定面取控制平面而非 bash 对 |
+| 晋升信号（either） | 第二个 `agent/pre-step` 即首请求完成后的下一模型请求；用 `tools.restrict()` 返回的 disposer 交换到完整 `ORCHESTRATOR_ALLOW` |
+| 剥离自动注入（杠杆 3） | pre-step 消息过滤 `agent-instructions`/`skill-catalog` source.kind，晋升后恢复；失败降级保留全部 |
+| resume/reload 不丢阶段 | 事件日志含 `tool/call` 或 `assistant/message` → 直接完整面（`shouldBootstrapAgent`） |
+| 子代理行为 | one-shot 子代理恒不锚定（等同上游"子代理无条件晋升"） |
+| 健壮性 | bootstrap restrict 失败降级完整面 + 告警；剥离失败降级保留 |
+
+不做（文档化）：晋升后 resident 收窄（上游因 Standard 目录巨大而设；我们
+完整面仅 16 工具）、compaction-epoch（我们无 compaction 收窄）、
+`bootstrapMaxTokens`（上游明示 opt-in 且依赖 profile 包的 prepareCall 行为）、
+技能目录剥离（本 preset 未挂载 skill 插件）。
+
+## 文件
+
+| 文件 | 变更 |
+|---|---|
+| `src/orchestration/bootstrap.mjs`（新，随 preset 发布） | `parseBootstrapEnv`/`sessionHasDurableSignal`/`shouldBootstrapAgent`/`stripSuppressedContext` + 默认集与剥离源常量 |
+| `src/orchestration/orchestration.mjs` | agent/created 按配置走 bootstrap restrict（disposer 保存）+ `installBootstrapPhase`（pre-step 计数晋升 + 上下文剥离 + 降级） |
+| `prompts/orchestrator.md` | BOOTSTRAP PHASE 说明 |
+| `scripts/build.mjs` / `validate.mjs` | 复制/校验 bootstrap.mjs |
+| `scripts/smoke-mount.mjs` | `SMOKE_BOOTSTRAP=1` 变体：真实链断言首请求恰为 8 工具 |
+| `tests/bootstrap.test.mjs`（新） | 纯函数：env 解析/信号判定/剥离 |
+| `tests/bootstrap-smoke.test.mjs`（新） | 跨进程 spawn smoke 变体 |
+| `tests/orchestration.test.mjs` | +7 行为用例（锚定/晋升/剥离/恢复/子代理/降级/关闭） |
+| README / CHANGELOG / 本文档 | 同步 |
+
+## 验证
+
+```
+npm test        → 175/175 通过（原 159）
+npm run smoke   → 16 tools，四探针全绿（bootstrap 关闭路径）
+SMOKE_BOOTSTRAP=1 node scripts/smoke-mount.mjs
+                → bootstrap OK — 8 tools on FIRST request，委派工具隐藏
+npm run build/validate → OK（产物含 bootstrap.mjs，REPRO 可复现）
+```
+
+## 使用与边界
+
+- 默认开启；`$DSH_ORCHESTRATION_BOOTSTRAP=0` 关闭；JSON 数组自定义。
+- 首请求无法直接委派（会以文本/规划回复，下一请求自动解锁）——这是锚定的
+  预期代价；首轮工具面变化一次，KV 前缀缓存在该点断开。
+- 真实模型收益（首轮轨迹质量）依据上游在 DeepSeek V4 Pro 上的实测；本插件
+  自身尚未在真实模型会话中复测该收益，安装后建议用小任务验证。

@@ -50,6 +50,7 @@
 import { createBroker, isDelegationTool, rootSessionKey, readBudgetsFromEnv } from "./broker.mjs";
 import { createArtifactStore } from "./artifacts.mjs";
 import { route, scoreTask } from "./policy.mjs";
+import { parseBootstrapEnv, shouldBootstrapAgent, stripSuppressedContext, BOOTSTRAP_SUPPRESSED_SOURCES } from "./bootstrap.mjs";
 
 /** Delegation tool names the Orchestrator may invoke. */
 const SUBAGENT_TOOLS = [
@@ -107,11 +108,56 @@ function resultText(result) {
 }
 
 /**
+ * Install the bootstrap phase for a fresh ROOT agent: narrow the tool surface
+ * to the control-plane set and promote to the full Orchestrator allow-list at
+ * the second `agent/pre-step` (i.e. after the first request completed — the
+ * `either` semantics: a tool call OR a text answer both promote). While
+ * bootstrapping, automatic `agent-instructions` injections are stripped from
+ * pre-step messages. Any failure degrades to the full catalog with a warning
+ * — a bootstrap bug must never brick the session.
+ * @param {object} agent - the created root agent.
+ * @param {object} tools - the agent's tools registry.
+ * @param {Function} liftBootstrap - the disposer that lifts the bootstrap restriction.
+ * @param {object} ctx - the standing scope context (logger).
+ */
+function installBootstrapPhase(agent, tools, liftBootstrap, ctx) {
+	let promoted = false;
+	let steps = 0;
+	const disposeListener = agent.ctx.on("agent/pre-step", async ({ agent: stepAgent }, next) => {
+		steps += 1;
+		if (steps >= 2 && !promoted) {
+			promoted = true;
+			try {
+				liftBootstrap();
+			} catch {
+				// the restriction layer may already be gone; the full restrict below is the real fix
+			}
+			try {
+				tools.restrict({ allow: [...ORCHESTRATOR_ALLOW] });
+			} catch (error) {
+				ctx.logger?.warn?.(`orchestration: promotion restrict failed (${String(error)}) — the session may stay on the bootstrap surface`);
+			}
+			disposeListener();
+		} else if (!promoted) {
+			// First request: strip automatic AGENTS.md-style injections so the
+			// anchor is clean (upstream lever 3).
+			const decision = await next();
+			if (decision?.kind !== "reject") return stripSuppressedContext(decision, new Set(BOOTSTRAP_SUPPRESSED_SOURCES));
+			return decision;
+		}
+		return next();
+	});
+}
+
+/**
  * Plugin entry: register the root-agent boundary listener, the broker-driven
- * tool chain, and the read-only broker_status tool.
+ * tool chain, and the read-only broker_status / broker_route tools.
  * @param {object} ctx - the preset standing scope's Cordis context.
  */
 export function apply(ctx) {
+	// Read once per preset load; tests can flip the env before calling apply().
+	const bootstrapAllow = parseBootstrapEnv();
+
 	ctx.on("agent/created", ({ agent }) => {
 		if (agent.session.header.parentSession !== void 0) return;
 		const tools = agent.ctx.get("tools");
@@ -124,7 +170,20 @@ export function apply(ctx) {
 			ctx.logger?.error("orchestration: tools registry unavailable at agent/created — refusing to run the root agent without the boundary");
 			throw new Error("orchestration: tools registry unavailable; orchestrator boundary cannot be installed (fail-closed)");
 		}
-		tools.restrict({ allow: [...ORCHESTRATOR_ALLOW] });
+		if (bootstrapAllow !== null && shouldBootstrapAgent(agent)) {
+			// Anchored bootstrap: request #1 sees the control-plane set only.
+			try {
+				const liftBootstrap = tools.restrict({ allow: [...bootstrapAllow] });
+				installBootstrapPhase(agent, tools, liftBootstrap, ctx);
+			} catch (error) {
+				// Degrade to the full catalog instead of bricking the session
+				// (e.g. a custom bootstrap list naming an unknown tool).
+				ctx.logger?.warn?.(`orchestration: bootstrap restriction failed (${String(error)}) — exposing the full orchestrator surface`);
+				tools.restrict({ allow: [...ORCHESTRATOR_ALLOW] });
+			}
+		} else {
+			tools.restrict({ allow: [...ORCHESTRATOR_ALLOW] });
+		}
 	});
 
 	// ── mechanical delegation chain ────────────────────────────────────────
