@@ -47,6 +47,7 @@
  */
 
 import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { extractTaskId, parseEnvelope, ROLE_REQUIRED_ON_SUCCESS } from "./protocol.mjs";
 import { createArtifactStore } from "./artifacts.mjs";
 
@@ -122,19 +123,24 @@ export function specialistId(toolName) {
  * @param {object} task - a task state (results, attempts, …).
  * @returns {"PLANNED" | "RUNNING" | "IMPLEMENTED" | "VERIFIED" | "REVIEWED" | "COMPLETE" | "BLOCKED"}
  */
-export function deriveTaskState(task) {
+export function deriveTaskState(task, { writerTools = [FIXER_DELEGATION] } = {}) {
+	const writers = new Set(writerTools);
 	const results = task.results ?? [];
 	if (results.length === 0) return "PLANNED";
-	const fixerSuccess = results.some((r) => r.tool === FIXER_DELEGATION && r.status === "SUCCESS");
-	const observerSuccess = results.some((r) => r.tool === "subagent_observer" && r.status === "SUCCESS");
-	const oracleResults = results.filter((r) => r.tool === "subagent_oracle");
+	const implementation = results.map((r, index) => ({ ...r, index })).filter((r) => writers.has(r.tool) && r.status === "SUCCESS").at(-1);
+	const verification = results.map((r, index) => ({ ...r, index })).filter((r) => r.tool === "subagent_observer" && r.status === "SUCCESS").at(-1);
+	const oracleResults = results.map((r, index) => ({ ...r, index })).filter((r) => r.tool === "subagent_oracle");
 	const latestOracle = oracleResults.at(-1);
 	if (latestOracle !== void 0 && latestOracle.status === "BLOCKED") return "BLOCKED";
-	if (fixerSuccess && observerSuccess) {
-		if (latestOracle === void 0 || latestOracle.status === "SUCCESS") return "COMPLETE";
+	if (implementation !== void 0 && verification !== void 0) {
+		// A review must be the LATEST Oracle result and must come AFTER the
+		// implementation it reviews; a pre-fix Oracle consultation does not
+		// satisfy the post-change review gate.
+		if (latestOracle !== void 0 && latestOracle.status === "SUCCESS" && latestOracle.index > implementation.index) return "COMPLETE";
+		if (latestOracle === void 0) return "COMPLETE";
 		return "VERIFIED"; // review required but not (yet) passed
 	}
-	if (fixerSuccess) return "IMPLEMENTED";
+	if (implementation !== void 0) return "IMPLEMENTED";
 	return "RUNNING";
 }
 
@@ -206,7 +212,10 @@ export function gitFingerprint(cwd) {
 		} catch {
 			status = ""; // dirty/unknown status still yields a head-based fingerprint
 		}
-		return `${head}:${status.length}`;
+		// Hash the actual porcelain text, not its length: same-length but
+		// different workspace states must never collide for receipt dedupe.
+		const statusHash = createHash("sha256").update(status).digest("hex");
+		return `${head}:${statusHash}`;
 	} catch {
 		return null;
 	}
@@ -284,47 +293,71 @@ export function extractReceipts(sectionText) {
  * Create one broker instance (process-local state, optionally persisted).
  * @param {Partial<typeof DEFAULT_BUDGETS>} [budgets] - budget overrides.
  * @param {object} [store] - the ArtifactStore (default: env-enabled store).
+ * @param {{writerTools?: string[]}} [options] - writer-capable delegation
+ *   tool names (the single-writer set).
  * @returns {object} the broker API.
  */
-export function createBroker(budgets = {}, store = createArtifactStore()) {
+export function createBroker(budgets = {}, store = createArtifactStore(), { writerTools = [FIXER_DELEGATION] } = {}) {
 	const cap = { ...DEFAULT_BUDGETS, ...budgets };
+	const writerToolSet = new Set(writerTools);
 	/** workspace -> { token, session } — the single-writer guard. */
 	const writerLocks = new Map();
 	/** execution token -> true once dispatch actually started (tools/execute). */
 	const dispatched = new Map();
-	/** session -> { tasks: Map<taskId, TaskState> } */
+	/** execution token -> reservation metadata for in-flight budget accounting. */
+	const reservations = new Map();
+	/** session -> { tasks: Map<taskId, TaskState>, writerTools: Set<string> } */
 	const sessions = new Map();
 	/** sessions already merged from disk (avoid repeated reads). */
 	const loadedSessions = new Set();
 
-	/** Ensure a task state exists for (session, taskId). */
-	function taskState(session, taskId) {
-		if (!loadedSessions.has(session)) {
-			loadedSessions.add(session);
-			const persisted = store.readSessionState(session);
-			if (persisted?.tasks !== void 0 && Array.isArray(persisted.tasks)) {
-				const tasks = new Map();
-				for (const t of persisted.tasks) {
-					if (typeof t.taskId !== "string") continue;
-					tasks.set(t.taskId, {
-						taskId: t.taskId,
-						delegationsUsed: Number.isSafeInteger(t.delegationsUsed) ? t.delegationsUsed : 0,
-						attempts: new Map(Object.entries(t.attempts ?? {})),
-						consecutiveFailures: Number.isSafeInteger(t.consecutiveFailures) ? t.consecutiveFailures : 0,
-						results: Array.isArray(t.results) ? t.results : [],
-						receipts: Array.isArray(t.receipts) ? t.receipts : [],
-						workspaceFingerprint: typeof t.workspaceFingerprint === "string" ? t.workspaceFingerprint : null,
-						duplicateReceipts: Number.isSafeInteger(t.duplicateReceipts) ? t.duplicateReceipts : 0
-					});
-				}
-				sessions.set(session, { tasks });
+	/** Load one session's persisted state at most once per process. */
+	function ensureSessionLoaded(session) {
+		if (loadedSessions.has(session)) return sessions.get(session);
+		loadedSessions.add(session);
+		const persisted = store.readSessionState(session);
+		if (persisted?.tasks !== void 0 && Array.isArray(persisted.tasks)) {
+			const tasks = new Map();
+			for (const t of persisted.tasks) {
+				if (typeof t.taskId !== "string") continue;
+				tasks.set(t.taskId, {
+					taskId: t.taskId,
+					delegationsUsed: Number.isSafeInteger(t.delegationsUsed) ? t.delegationsUsed : 0,
+					attempts: new Map(Object.entries(t.attempts ?? {})),
+					consecutiveFailures: Number.isSafeInteger(t.consecutiveFailures) ? t.consecutiveFailures : 0,
+					results: Array.isArray(t.results) ? t.results : [],
+					receipts: Array.isArray(t.receipts) ? t.receipts : [],
+					workspaceFingerprint: typeof t.workspaceFingerprint === "string" ? t.workspaceFingerprint : null,
+					duplicateReceipts: Number.isSafeInteger(t.duplicateReceipts) ? t.duplicateReceipts : 0,
+					pendingDelegations: 0,
+					pendingAttempts: new Map()
+				});
 			}
+			const persistedWriters = Array.isArray(persisted.writerTools)
+				? persisted.writerTools.filter((name) => typeof name === "string")
+				: [...writerToolSet];
+			const s = { tasks, writerTools: new Set(persistedWriters) };
+			sessions.set(session, s);
+			return s;
 		}
+		return void 0;
+	}
+
+	/** Ensure a session state exists. */
+	function sessionState(session) {
+		const loaded = ensureSessionLoaded(session);
+		if (loaded !== void 0) return loaded;
 		let s = sessions.get(session);
 		if (s === void 0) {
-			s = { tasks: new Map() };
+			s = { tasks: new Map(), writerTools: new Set(writerToolSet) };
 			sessions.set(session, s);
 		}
+		return s;
+	}
+
+	/** Ensure a task state exists for (session, taskId). */
+	function taskState(session, taskId) {
+		const s = sessionState(session);
 		let task = s.tasks.get(taskId);
 		if (task === void 0) {
 			task = {
@@ -334,8 +367,10 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 				consecutiveFailures: 0,
 				results: [], // { at, tool, status, summary, errors, warnings, receipts?, fingerprint? }
 				receipts: [], // accumulated receipts across the task (dedupe/replay)
-				workspaceFingerprint: null, // last known fixer after-fingerprint
-				duplicateReceipts: 0
+				workspaceFingerprint: null, // last known workspace fingerprint
+				duplicateReceipts: 0,
+				pendingDelegations: 0,
+				pendingAttempts: new Map() // toolName -> in-flight reservations
 			};
 			s.tasks.set(taskId, task);
 		}
@@ -347,6 +382,7 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 		const s = sessions.get(session);
 		if (s === void 0) return;
 		store.writeSessionState(session, {
+			writerTools: [...s.writerTools],
 			tasks: [...s.tasks.values()].map((t) => ({
 				taskId: t.taskId,
 				delegationsUsed: t.delegationsUsed,
@@ -378,50 +414,61 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 					reason: "delegation prompt must declare a `TASK_ID: <id>` line — budgets and envelope linkage are keyed by it; re-send the delegation with TASK_ID as the first line."
 				};
 			}
+			const s = sessionState(session);
 			const task = taskState(session, taskId);
+			const pendingDelegations = task.pendingDelegations;
+			const pendingAttempts = task.pendingAttempts.get(exec.name) ?? 0;
 			// Review-failure loop closure: an Oracle BLOCKED result blocks ALL
 			// further delegations on this TASK_ID until the Orchestrator
 			// reopens the problem under a NEW id with the corrected approach.
-			if (deriveTaskState(task) === "BLOCKED") {
+			if (deriveTaskState(task, { writerTools: [...s.writerTools] }) === "BLOCKED") {
 				return {
 					ok: false,
 					kind: "review",
 					reason: `review blocked: Oracle returned BLOCKED on task "${taskId}" — do NOT keep delegating on this id; open a NEW TASK_ID with the corrected approach, or stop and report.`
 				};
 			}
-			if (task.delegationsUsed >= cap.maxDelegationsPerTask) {
+			// In-flight reservations count against the caps so parallel
+			// delegation calls cannot all pass the gate before any settles.
+			if (task.delegationsUsed + pendingDelegations >= cap.maxDelegationsPerTask) {
 				return {
 					ok: false,
 					kind: "budget",
-					reason: `task budget exhausted: task "${taskId}" has used ${task.delegationsUsed}/${cap.maxDelegationsPerTask} delegations — open a new TASK_ID for a new subproblem, or stop and report to the user.`
+					reason: `task budget exhausted: task "${taskId}" has ${task.delegationsUsed + pendingDelegations}/${cap.maxDelegationsPerTask} delegations used or in flight — open a new TASK_ID for a new subproblem, or stop and report to the user.`
 				};
 			}
 			const attempts = task.attempts.get(exec.name) ?? 0;
-			if (attempts >= cap.maxAttemptsPerSpecialist) {
+			if (attempts + pendingAttempts >= cap.maxAttemptsPerSpecialist) {
 				return {
 					ok: false,
 					kind: "budget",
-					reason: `retry budget exhausted: ${exec.name} has ${attempts}/${cap.maxAttemptsPerSpecialist} completed attempts on task "${taskId}" — re-frame it as a NEW TASK_ID with a materially narrower question, or stop.`
+					reason: `retry budget exhausted: ${exec.name} has ${attempts + pendingAttempts}/${cap.maxAttemptsPerSpecialist} attempts used or in flight on task "${taskId}" — re-frame it as a NEW TASK_ID with a materially narrower question, or stop.`
 				};
 			}
-			if (task.consecutiveFailures >= cap.maxConsecutiveFailures) {
+			// Conservative consecutive-failure gate: every in-flight call may
+			// fail, so reserve capacity for the worst case before admitting it.
+			if (task.consecutiveFailures + pendingDelegations + 1 > cap.maxConsecutiveFailures) {
 				return {
 					ok: false,
 					kind: "budget",
-					reason: `hard stop: ${task.consecutiveFailures} consecutive non-SUCCESS results on task "${taskId}" — report to the user instead of retrying.`
+					reason: `hard stop: ${task.consecutiveFailures} consecutive non-SUCCESS results with ${pendingDelegations} delegation(s) in flight on task "${taskId}" — report to the user instead of retrying.`
 				};
 			}
-			if (exec.name === FIXER_DELEGATION) {
+			if (writerToolSet.has(exec.name)) {
 				const ws = callerWorkspace(exec);
 				if (writerLocks.has(ws)) {
 					return {
 						ok: false,
 						kind: "writer",
-						reason: `single-writer: a fixer delegation is already in progress for workspace "${ws}" — writes are serialized; wait for it to finish.`
+						reason: `single-writer: a writer delegation is already in progress for workspace "${ws}" — writes are serialized; wait for it to finish.`
 					};
 				}
 				writerLocks.set(ws, { token: exec.token, session, baseline: gitFingerprint(exec?.agent?.session?.header?.cwd ?? process.cwd()) });
 			}
+			// Reserve budget slots at the gate so parallel calls observe them.
+			task.pendingDelegations += 1;
+			task.pendingAttempts.set(exec.name, pendingAttempts + 1);
+			reservations.set(exec.token, { session, taskId, tool: exec.name });
 			return { ok: true };
 		},
 
@@ -442,11 +489,32 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 		},
 
 		/**
+		 * Release one gate-time budget reservation (no completed attempt is
+		 * recorded). Called by pre-execute/execute error paths and by
+		 * `settle()` for denials/cancellations that never dispatched.
+		 * @param {object} exec - the execution that owns the reservation.
+		 * @returns {object | null} the released reservation metadata.
+		 */
+		releaseReservation(exec) {
+			const reservation = reservations.get(exec.token);
+			if (reservation === void 0) return null;
+			reservations.delete(exec.token);
+			const task = sessions.get(reservation.session)?.tasks.get(reservation.taskId);
+			if (task !== void 0) {
+				task.pendingDelegations = Math.max(0, task.pendingDelegations - 1);
+				const pending = task.pendingAttempts.get(reservation.tool) ?? 0;
+				if (pending <= 1) task.pendingAttempts.delete(reservation.tool);
+				else task.pendingAttempts.set(reservation.tool, pending - 1);
+			}
+			return reservation;
+		},
+
+		/**
 		 * Release the writer lock, but only for the exact call that holds it.
 		 * @param {object} exec - the completing execution.
 		 */
 		releaseWriter(exec) {
-			if (exec.name !== FIXER_DELEGATION) return;
+			if (!writerToolSet.has(exec.name)) return;
 			const ws = callerWorkspace(exec);
 			const held = writerLocks.get(ws);
 			if (held !== void 0 && held.token === exec.token) writerLocks.delete(ws);
@@ -470,11 +538,15 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 		 */
 		settle(exec, result) {
 			if (!isDelegationTool(exec.name)) return { decision: { kind: "accept" }, recorded: null };
-			// Capture the fixer's baseline fingerprint BEFORE releasing the
+			// Capture the writer's baseline fingerprint BEFORE releasing the
 			// writer lock (the lock entry carries it and is deleted on release).
 			const ws = callerWorkspace(exec);
 			const baseline = writerLocks.get(ws)?.baseline ?? null;
 			this.releaseWriter(exec);
+			// Release the gate-time budget reservation on every settle path.
+			// For a real dispatch the completed counters are incremented below;
+			// for denials/cancellations this is the only accounting step.
+			this.releaseReservation(exec);
 			const wasDispatched = dispatched.get(exec.token) === true;
 			dispatched.delete(exec.token);
 			if (!wasDispatched) return { decision: { kind: "accept" }, recorded: null };
@@ -494,6 +566,7 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 			}
 			const task = taskState(session, taskId);
 			const callIndex = task.results.length;
+			const cwd = exec?.agent?.session?.header?.cwd ?? process.cwd();
 
 			// Real tool failures: pass through, count as a failed attempt.
 			if (result.isError) {
@@ -550,20 +623,25 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 				receipts,
 				callIndex
 			};
-			if (tool === FIXER_DELEGATION) {
+			const fingerprintNow = gitFingerprint(cwd);
+			if (writerToolSet.has(tool)) {
 				record.fingerprint = {
 					before: baseline,
-					after: gitFingerprint(exec?.agent?.session?.header?.cwd ?? process.cwd())
+					after: fingerprintNow
 				};
 				if (typeof record.fingerprint.after === "string") {
 					task.workspaceFingerprint = record.fingerprint.after;
 				}
+			} else if (typeof fingerprintNow === "string") {
+				// Re-sample at every settle so changes made outside a writer
+				// run are visible before receipt dedupe decides.
+				task.workspaceFingerprint = fingerprintNow;
 			}
 			// Duplicate-verification detection (pytest dedupe): a receipt whose
 			// command already has a SUCCESS receipt on this task, recorded at
 			// the SAME workspace fingerprint, is a re-run we flag so the
 			// Orchestrator can see verification was repeated, not added.
-			const fpNow = task.workspaceFingerprint;
+			const fpNow = fingerprintNow ?? task.workspaceFingerprint;
 			for (const receipt of receipts) {
 				const prior = task.receipts.find((p) => p.command === receipt.command && p.success === true);
 				if (prior !== void 0 && prior.fingerprint !== null && fpNow !== null && prior.fingerprint === fpNow) {
@@ -615,21 +693,22 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 		report(session, { taskId, includeArtifacts = false } = {}) {
 			const lines = ["Orchestration broker state:"];
 			lines.push(`- budgets: ${cap.maxDelegationsPerTask} delegations/task, ${cap.maxAttemptsPerSpecialist} attempts/specialist/task, ${cap.maxConsecutiveFailures} consecutive failures, ${cap.maxReceiptsPerTask} receipts/task (report-only)`);
-			const s = sessions.get(session);
-			const tasks = s === void 0 ? [] : [...s.tasks.values()].filter((t) => taskId === void 0 || t.taskId === taskId);
+			const s = sessionState(session);
+			const tasks = [...s.tasks.values()].filter((t) => taskId === void 0 || t.taskId === taskId);
 			if (tasks.length === 0) {
 				lines.push("- no delegations recorded yet");
 			} else {
 				for (const task of tasks) {
-					const state = deriveTaskState(task);
+					const state = deriveTaskState(task, { writerTools: [...s.writerTools] });
+					const pending = task.pendingDelegations > 0 ? `, ${task.pendingDelegations} in flight` : "";
 					const dup = task.duplicateReceipts > 0 ? `, ${task.duplicateReceipts} duplicate verification(s)` : "";
-					lines.push(`- task "${task.taskId}" [${state}]: ${task.delegationsUsed}/${cap.maxDelegationsPerTask} delegations, ${task.consecutiveFailures} consecutive non-SUCCESS, ${task.receipts.length}/${cap.maxReceiptsPerTask} receipts${dup}`);
+					lines.push(`- task "${task.taskId}" [${state}]: ${task.delegationsUsed}/${cap.maxDelegationsPerTask} delegations${pending}, ${task.consecutiveFailures} consecutive non-SUCCESS, ${task.receipts.length}/${cap.maxReceiptsPerTask} receipts${dup}`);
 					if (state === "COMPLETE") {
-						lines.push("  - COMPLETE: fixer implemented, observer verified, review satisfied — reporting completion is now allowed");
+						lines.push("  - COMPLETE: implementation verified and the post-change review passed — reporting completion is now allowed");
 					} else if (state === "BLOCKED") {
 						lines.push("  - BLOCKED: the latest Oracle review returned BLOCKED — do NOT keep delegating on this TASK_ID; reopen under a NEW id");
 					} else if (state === "VERIFIED") {
-						lines.push("  - VERIFIED: an Oracle review is required but not passed yet — completion must wait");
+						lines.push("  - VERIFIED: an Oracle review after the latest implementation is required but not passed yet — completion must wait");
 					}
 					for (const [tool, count] of task.attempts) {
 						lines.push(`  - ${tool}: ${count}/${cap.maxAttemptsPerSpecialist} attempts`);
@@ -642,6 +721,16 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 						if (r.fingerprint?.after !== void 0) {
 							lines.push(`    workspace fingerprint after: ${r.fingerprint.after}`);
 						}
+					}
+					// Receipt detail is what lets a specialist decide BEFORE running
+					// a command whether an identical successful run already exists.
+					for (const receipt of task.receipts) {
+						const risk = receipt.risk ?? "R?";
+						const exit = receipt.exit === void 0 ? "?" : String(receipt.exit);
+						const success = receipt.success === true ? "success" : "not-success";
+						const fingerprint = typeof receipt.fingerprint === "string" ? ` @ ${receipt.fingerprint.slice(0, 24)}` : "";
+						const result = String(receipt.result ?? "").slice(0, 80);
+						lines.push(`  - receipt #${receipt.index} ${receipt.command} [${risk}, exit=${exit}, ${success}]${fingerprint}: ${result}`);
 					}
 				}
 			}
@@ -657,9 +746,9 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 
 		/** Deep-enough snapshot of one session's state (tests/persistence). */
 		snapshot(session) {
-			const s = sessions.get(session);
-			if (s === void 0) return { tasks: [] };
+			const s = sessionState(session);
 			return {
+				writerTools: [...s.writerTools],
 				tasks: [...s.tasks.values()].map((t) => ({
 					taskId: t.taskId,
 					delegationsUsed: t.delegationsUsed,
@@ -669,7 +758,8 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 					receipts: t.receipts.map((r) => ({ ...r })),
 					workspaceFingerprint: t.workspaceFingerprint,
 					duplicateReceipts: t.duplicateReceipts,
-					state: deriveTaskState(t)
+					pendingDelegations: t.pendingDelegations,
+					state: deriveTaskState(t, { writerTools: [...s.writerTools] })
 				}))
 			};
 		},
@@ -681,6 +771,7 @@ export function createBroker(budgets = {}, store = createArtifactStore()) {
 		reset() {
 			writerLocks.clear();
 			dispatched.clear();
+			reservations.clear();
 			sessions.clear();
 			loadedSessions.clear();
 		}

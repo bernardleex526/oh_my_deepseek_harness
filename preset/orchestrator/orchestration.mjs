@@ -49,18 +49,9 @@
 
 import { createBroker, isDelegationTool, rootSessionKey, readBudgetsFromEnv } from "./broker.mjs";
 import { createArtifactStore } from "./artifacts.mjs";
+import { DELEGATION_TOOLS, WRITER_DELEGATION_TOOLS } from "./runtime-catalog.mjs";
 import { route, scoreTask } from "./policy.mjs";
 import { parseBootstrapEnv, shouldBootstrapAgent, stripSuppressedContext, BOOTSTRAP_SUPPRESSED_SOURCES } from "./bootstrap.mjs";
-
-/** Delegation tool names the Orchestrator may invoke. */
-const SUBAGENT_TOOLS = [
-	"subagent_explorer",
-	"subagent_librarian",
-	"subagent_observer",
-	"subagent_oracle",
-	"subagent_designer",
-	"subagent_fixer"
-];
 
 /**
  * The Orchestrator's own tool surface (allow list).
@@ -81,7 +72,7 @@ export const ORCHESTRATOR_ALLOW = [
 	"list_agents",
 	"broker_status",
 	"broker_route",
-	...SUBAGENT_TOOLS
+	...DELEGATION_TOOLS
 ];
 
 /** Stable Cordis plugin name for this row. */
@@ -95,7 +86,9 @@ export const name = "orchestration";
  * Exported so tests can reset it between cases; the runtime only ever uses
  * the module singleton.
  */
-export const broker = createBroker(readBudgetsFromEnv(), createArtifactStore());
+export const broker = createBroker(readBudgetsFromEnv(), createArtifactStore(), {
+	writerTools: WRITER_DELEGATION_TOOLS
+});
 
 /** Join the text blocks of a normalized tool result into one string. */
 function resultText(result) {
@@ -216,6 +209,7 @@ export function apply(ctx) {
 		} catch (error) {
 			// A later listener in the pre-execute chain threw. That becomes a
 			// `final-result` in dsh-tools and never reaches execute/post-execute.
+			broker.releaseReservation(exec);
 			broker.releaseWriter(exec);
 			throw error;
 		}
@@ -232,6 +226,12 @@ export function apply(ctx) {
 		try {
 			broker.markDispatched(exec);
 			return await next();
+		} catch (error) {
+			// A pipeline throw becomes a final-result and skips post-execute,
+			// so release the budget reservation here (the writer lock is
+			// released in the finally below).
+			broker.releaseReservation(exec);
+			throw error;
 		} finally {
 			broker.releaseWriter(exec);
 		}

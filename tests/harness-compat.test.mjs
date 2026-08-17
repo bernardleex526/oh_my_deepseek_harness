@@ -32,6 +32,7 @@ test("Test 1: the plugin ships no host-patch layer (additive only)", () => {
 	assert.ok(presetFiles.includes("agent.cordis.yml"));
 	assert.ok(presetFiles.includes("preset.yml"));
 	assert.ok(presetFiles.includes("orchestration.mjs"));
+	assert.ok(presetFiles.includes("runtime-catalog.mjs"));
 	const repoFiles = readdirSync(ROOT);
 	assert.ok(!repoFiles.includes("cordis.patch.yml"), "plugin must not ship a host patch layer");
 });
@@ -73,6 +74,8 @@ test("the composition builds deterministically and matches the generated file", 
 	assert.equal(generated, renderComposition());
 	const meta = readFileSync(join(PRESET_DIR, "preset.yml"), "utf8").trim();
 	assert.equal(meta, renderPresetMetadata().trim());
+	const catalog = readFileSync(join(PRESET_DIR, "runtime-catalog.mjs"), "utf8");
+	assert.match(catalog, /subagent_fixer/);
 });
 
 test("preset metadata names the mode and orders it after the shipped set", () => {

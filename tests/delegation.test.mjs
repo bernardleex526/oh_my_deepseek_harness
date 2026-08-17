@@ -61,6 +61,7 @@ test("orchestration.mjs is a dependency-free preset row (siblings + node builtin
 	const source = readFileSync(join(ROOT, "src", "orchestration", "orchestration.mjs"), "utf8");
 	assert.ok(!/^\s*import\s+.*\s+from\s+["'](?!\.|node:)/m.test(source), "orchestration.mjs must not import bare specifiers");
 	assert.match(source, /from "\.\/broker\.mjs"/, "orchestration.mjs must import ./broker.mjs");
+	assert.match(source, /from "\.\/runtime-catalog\.mjs"/, "orchestration.mjs must import ./runtime-catalog.mjs");
 	assert.match(source, /from "\.\/artifacts\.mjs"/, "orchestration.mjs must import ./artifacts.mjs");
 	assert.match(source, /from "\.\/policy\.mjs"/, "orchestration.mjs must import ./policy.mjs");
 	assert.match(source, /from "\.\/bootstrap\.mjs"/, "orchestration.mjs must import ./bootstrap.mjs");

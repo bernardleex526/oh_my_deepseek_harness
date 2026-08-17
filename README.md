@@ -14,8 +14,9 @@ Harness 中实现“调查 → 判断 → 执行 → 验证”的完整工作流
 
 ## 更新记录（简要）
 
-> 详细变更见 [CHANGELOG.md](CHANGELOG.md)。自 `6a252cd` 起共四轮更新：
+> 详细变更见 [CHANGELOG.md](CHANGELOG.md)。自 `6a252cd` 起共五轮更新：
 
+- **v0.1.6（2026-08-17）** — 审查修复批次：自定义角色真正可见且可写（单写者锁同步）、并行委派预算预留、workspace fingerprint 内容哈希、持久化状态即时可读、broker_status 输出 receipt 详情、Linux CI 修复。
 - **v0.1.4（2026-08-16）** — 融合 dsh-anchored-standard 的**锚定首请求**：
   新会话首个模型请求仅暴露控制平面工具，首个信号后自动晋升完整委派面；
   `$DSH_ORCHESTRATION_BOOTSTRAP` 可关闭/自定义。
@@ -62,7 +63,7 @@ envelope 返回协议）均与 oh-my-opencode-slim 一脉相承，并利用 DSH 
 - 🎛️ **Orchestrator 控制平面**：理解目标、拆解任务、路由调度、整合结果、向用户汇报
 - 🔍 **Explorer**：仓库静态事实（文件、符号、调用链、结构、已有模式）
 - 📚 **Librarian**：外部知识（官方文档、第三方库、API、版本、标准）
-- 👀 **Observer**：运行事实（测试输出、日志、截图、UI、复现）
+- 👀 **Observer**：运行事实（测试输出、日志、已有截图、UI 输出、复现）
 - 🧠 **Oracle**：深度技术推理（根因、架构权衡、并发、安全、性能）
 - 🎨 **Designer**：视觉/交互判断（UI/UX、布局、可访问性、规范输出）
 - 🔧 **Fixer**：执行修改（唯一拥有 write/edit 的代理）
@@ -76,7 +77,7 @@ envelope 返回协议）均与 oh-my-opencode-slim 一脉相承，并利用 DSH 
 - ⚓ **锚定首请求（anchored bootstrap）**：融合 [dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) 的机制——新会话的**第一个模型请求只暴露控制平面工具**（read/grep/glob/ask/todo/broker_*，8 个），首个回复或首次工具调用后自动晋升完整 16 工具面（含全部委派工具），首轮成为干净的"理解任务"回合；恢复会话与 one-shot 子代理恒不锚定。`$DSH_ORCHESTRATION_BOOTSTRAP=0` 关闭，JSON 数组自定义
 - 🧾 **测试 receipt 分层与去重**：VERIFICATION/OBSERVED 支持 `[risk=R0-R3,exit,counts,fail]` 注解；Fixer/Observer 先查 `broker_status` 避免重跑相同命令；**同 fingerprint 的重复验证被机械标记**；每任务报告式 receipt 预算（默认 12 条）；风险分层/变更测试选择/失败分类规则内嵌 Fixer prompt
 - 💾 **持久化（可选）**：设置 `$DSH_ORCHESTRATION_HOME` 后，每次委派的结果全文与解析元数据、会话状态（预算/结果/receipts/fingerprint/任务状态）自动落盘——支持崩溃恢复、任务 replay 与质量统计
-- 🧩 **自定义角色（本地构建）**：`roles.json` 声明新 specialist，`npm run build:local` 合并为额外的委派工具，隔离保证与内置六角色一致
+- 🧩 **自定义角色（本地构建）**：`roles.json` 声明新 specialist（`write`/`edit` 显式开启后可成为真正可写 executor），`npm run build:local` 合并为额外的委派工具并同步进 Orchestrator allow-list 与单写者锁，隔离保证与内置六角色一致
 - 📊 **状态/指标 CLI**：`npm run status` / `npm run metrics` 从存储渲染运行状态（含任务状态与 receipt 分层）与历史质量指标
 - 🎛️ **多模型子代理**：每个 specialist（含自定义角色）可经 `model-routing.json` 独立配置 provider / model / maxTokens——Explorer 用轻量快模型、Oracle/Fixer 用强模型，互不影响
 
@@ -142,7 +143,7 @@ Remove-Item -Recurse "$dsHome\.agent-presets\orchestrator"
 
 ```powershell
 node scripts/validate.mjs     # 真实 loader 方言解析 + 行名解析 + 过滤器校验
-node --test tests/            # 测试套件（含真实挂载集成测试）
+node --test                   # 测试套件（含真实挂载集成测试）
 node scripts/smoke-mount.mjs  # 真实启动 harness 并挂载 preset 的集成验证
 ```
 
@@ -367,7 +368,7 @@ tests/                        # 测试套件（node:test）
 ### 9. 测试
 
 ```powershell
-node --test tests/
+node --test
 ```
 
 | 测试文件 | 覆盖 |

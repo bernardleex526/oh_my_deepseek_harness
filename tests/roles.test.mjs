@@ -12,7 +12,7 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadCustomRoles, customSpecialist, CUSTOM_ROLES_FILE, KNOWN_ROLES } from "../src/config/roles.js";
-import { renderComposition } from "../scripts/build.mjs";
+import { renderComposition, renderRuntimeCatalog } from "../scripts/build.mjs";
 import { SUBAGENT_TOOLS } from "../src/permissions/agent-permissions.js";
 
 const VALID = {
@@ -31,6 +31,7 @@ function tempRoot(roles) {
 		writeFileSync(join(dir, CUSTOM_ROLES_FILE), JSON.stringify(roles), "utf8");
 		mkdirSync(join(dir, "prompts"), { recursive: true });
 		writeFileSync(join(dir, "prompts", "pen_tester.md"), "# Pen Tester\n\nRole prompt body.", "utf8");
+		writeFileSync(join(dir, "prompts", "orchestrator.md"), "# Orchestrator\n\n{{ROUTING_TABLE}}\n{{ENVELOPE}}\n{{DELEGATION_TOOLS}}\n{{AGENT_ROSTER}}\n", "utf8");
 	}
 	return dir;
 }
@@ -68,6 +69,29 @@ test("valid custom roles load with full specialist shape", () => {
 	}
 });
 
+test("custom executor roles can declare write/edit and are writer-locked", () => {
+	const root = tempRoot({
+		implementer: {
+			role: "executor",
+			personaFile: "prompts/pen_tester.md",
+			description: "custom executor",
+			permissions: { read: ["read"], search: ["grep"], shell: true, write: true, edit: true }
+		}
+	});
+	try {
+		const [role] = loadCustomRoles(root);
+		const allow = role.filterFor("posix").allow;
+		assert.ok(allow.includes("write"), "custom executor must see write");
+		assert.ok(allow.includes("edit"), "custom executor must see edit");
+		const catalog = renderRuntimeCatalog([role]);
+		assert.match(catalog, /DELEGATION_TOOLS = \[/);
+		assert.match(catalog, /"subagent_implementer"/);
+		assert.match(catalog, /WRITER_DELEGATION_TOOLS = \[[\s\S]*"subagent_implementer"/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("colliding ids are rejected (custom roles cannot shadow builtins)", () => {
 	const root = tempRoot({ fixer: { role: "executor", personaFile: "p.md", description: "x" } });
 	try {
@@ -83,7 +107,7 @@ test("invalid entries fail loudly", () => {
 		{ bad: { role: "executor", description: "x" }, re: /personaFile is required/ },
 		{ bad: { role: "executor", personaFile: "p.md" }, re: /description is required/ },
 		{ bad: { role: "executor", personaFile: "p.md", description: "x", toolName: "wrong_name" }, re: /toolName must be/ },
-		{ bad: { role: "executor", personaFile: "p.md", description: "x", permissions: { write: true } }, re: /unknown key "write"/ },
+		{ bad: { role: "executor", personaFile: "p.md", description: "x", permissions: { read: ["bogus"] } }, re: /unknown tool "bogus"/ },
 		{ bad: { role: "executor", personaFile: "p.md", description: "x", permissions: { read: "read" } }, re: /permissions\.read must be an array/ },
 		{ bad: { role: "executor", personaFile: "p.md", description: "x", permissions: { shell: "yes" } }, re: /permissions\.shell must be a boolean/ },
 		{ bad: { role: "executor", personaFile: "p.md", description: "x", maxDepth: 0 }, re: /maxDepth/ }

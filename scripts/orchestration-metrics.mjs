@@ -57,10 +57,12 @@ function toolRow(tool) {
 for (const session of sessions) {
 	const state = store.readSessionState(session);
 	if (state?.tasks === void 0) continue;
+	const writerTools = Array.isArray(state.writerTools) ? state.writerTools : void 0;
 	for (const task of state.tasks) {
 		totalTasks += 1;
 		tasksPerSession.set(session, (tasksPerSession.get(session) ?? 0) + 1);
-		stateCounts.set(deriveTaskState(task), (stateCounts.get(deriveTaskState(task)) ?? 0) + 1);
+		const derived = deriveTaskState(task, writerTools === void 0 ? {} : { writerTools });
+		stateCounts.set(derived, (stateCounts.get(derived) ?? 0) + 1);
 		duplicateReceipts += task.duplicateReceipts ?? 0;
 		let failed = false;
 		for (const r of task.results ?? []) {

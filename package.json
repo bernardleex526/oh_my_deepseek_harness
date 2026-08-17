@@ -1,6 +1,6 @@
 {
   "name": "dsh-multi-agent-orchestrator",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Multi-agent coding orchestration mode for DeepSeek Harness: an Orchestrator control plane over Explorer / Librarian / Observer / Oracle / Designer / Fixer specialists with strict role, context, and permission isolation.",
   "keywords": [
     "deepseek-harness",

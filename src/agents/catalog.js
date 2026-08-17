@@ -101,7 +101,7 @@ export const SPECIALISTS = [
 		role: "information-producer",
 		personaFile: "prompts/observer.md",
 		permissions: SPECIALIST_PERMISSIONS.observer,
-		description: "运行事实：测试输出、日志、截图、UI 与运行时行为"
+		description: "运行事实：测试输出、日志、已有截图、UI 输出与运行时行为"
 	}),
 	specialist({
 		id: "oracle",

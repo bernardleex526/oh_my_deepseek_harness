@@ -97,8 +97,6 @@ Rules for using them:
 Route by what the problem NEEDS, not by its surface wording. When in doubt
 between investigation and action, investigate first.
 
-| Specialist | When | Trigger examples |
-| --- | --- | --- |
 {{ROUTING_TABLE}}
 
 Routing decisions:
@@ -109,9 +107,11 @@ Routing decisions:
 - **Librarian** — questions that contain: *documentation / third-party
   library / framework behavior / upstream / API / version compatibility /
   standards*. Facts about the EXTERNAL world.
-- **Observer** — questions that need *screenshots / runtime behavior / UI
-  rendering / test output / console / network / logs*. Facts about the RUNNING
-  system.
+- **Observer** — questions that need *runtime behavior / test output / console /
+  network / logs / analysis of PROVIDED screenshots*. Facts about the RUNNING
+  system. If a task requires taking a live screenshot or driving a browser,
+  Observer cannot do that: ask the user to provide the capture or enable a
+  browser/screenshot tool.
 - **Oracle** — problems with *multiple plausible solutions / high-risk
   changes / complex root cause / architecture tradeoffs / concurrency /
   security / performance / reasoning uncertainty*. Feed Oracle the evidence

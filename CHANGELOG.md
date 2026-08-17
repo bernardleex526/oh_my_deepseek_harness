@@ -1,5 +1,39 @@
 # 更新说明 / CHANGELOG
 
+## v0.1.6（2026-08-17）— 审查修复批次：自定义角色、并发预算、测试去重与持久化
+
+测试 190 项全部通过；validate OK；smoke（含 bootstrap）OK。
+
+### P0 修复
+
+- **自定义角色运行时可见**：新增 `runtime-catalog.mjs`（dist 复制、local
+  按角色生成），`orchestration.mjs` 从它展开 Orchestrator allow-list；
+  local build 的自定义 `subagent_<id>` 不再被边界收窄隐藏。writer 集合同步
+  进入单写者锁。
+- **预算并发安全**：gate 阶段预留 in-flight 配额（任务总委派、每 specialist
+  尝试、保守连续失败容量），settle/错误/取消路径按 token 释放，并行委派
+  不再绕过 12/3/3 机械上限。
+- **workspace fingerprint 内容哈希**：`git status --porcelain` 从长度改为
+  sha256 内容哈希；Observer/非 writer settle 时重新采样，外部改动不会再
+  被误判为“同一 workspace”。
+- **持久化即时可读**：`report()` / `snapshot()` 现在也会先加载磁盘状态，
+  进程重启后 `broker_status` 无需先 gate 即可看到任务与 receipt。
+- **broker_status receipt 详情**：报告包含每个 receipt 的 risk/exit/success/
+  fingerprint 与结果摘要，Fixer/Observer 跑前可真正判断是否跳过。
+- **Linux CI 修复**：`tests/artifacts.test.mjs` 不再硬编码反斜杠路径。
+
+### P1 修复
+
+- 路由表头不再重复渲染；`renderComposition(root)` 尊重传入 root。
+- 自定义角色支持 `write`/`edit` 显式权限，自定义 executor 真正可写并纳入
+  单写者锁；read/search 权限只接受已注册工具名。
+- Observer prompt / 路由说明如实声明“只能读已有截图，不能截图/驱动浏览器”。
+- README 测试命令改为 `node --test`；smoke/validate 支持相对 `DSH_CHECKOUT`。
+- `listSessions()` 按最新写入时间排序；Oracle 复审必须发生在实现之后才
+  满足 COMPLETE 门禁。
+- 持久化状态新增 `writerTools`，status/metrics CLI 对自定义 executor 的
+  状态推导一致。
+
 ## v0.1.5（2026-08-16）— 轨迹计数器客户端插件（We need… vs Let me…）
 
 测试由 175 项增至 186 项，全部通过。

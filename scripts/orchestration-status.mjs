@@ -50,8 +50,9 @@ if (state === null) {
 	process.exit(1);
 }
 console.log(`session ${sessionId} (saved ${new Date(state.savedAt ?? 0).toISOString()}):`);
+const writerTools = Array.isArray(state.writerTools) ? state.writerTools : void 0;
 for (const task of state.tasks ?? []) {
-	const derived = deriveTaskState(task);
+	const derived = deriveTaskState(task, writerTools === void 0 ? {} : { writerTools });
 	console.log(`\ntask "${task.taskId}" [${derived}]: ${task.delegationsUsed} delegations, ${task.consecutiveFailures} consecutive failures, ${(task.receipts ?? []).length} receipts, ${task.duplicateReceipts ?? 0} duplicate verification(s)`);
 	for (const [tool, count] of Object.entries(task.attempts ?? {})) {
 		console.log(`  ${tool}: ${count} attempt(s)`);

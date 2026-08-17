@@ -48,7 +48,7 @@ test("defaultStoreRoot falls back to DSH_HOME then ~/.dsh", () => {
 	try {
 		delete process.env[STORE_ROOT_ENV];
 		process.env.DSH_HOME = "C:\\dsh-home";
-		assert.equal(defaultStoreRoot(), "C:\\dsh-home\\orchestration");
+		assert.equal(defaultStoreRoot(), join("C:\\dsh-home", "orchestration"));
 		delete process.env.DSH_HOME;
 		assert.ok(defaultStoreRoot().endsWith(join(".dsh", "orchestration")));
 	} finally {

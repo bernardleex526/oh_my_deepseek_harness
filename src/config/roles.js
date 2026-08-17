@@ -27,7 +27,9 @@
  * - `role` is one of the catalog's role vocabulary
  *   (information-producer | decision-maker | executor);
  * - `permissions` is a subset of the specialist permission spec; unknown
- *   keys are rejected.
+ *   keys are rejected. `write`/`edit` are explicit boolean switches, so a
+ *   custom `executor` can be a real writer and is then covered by the
+ *   single-writer lock via `runtime-catalog.mjs`.
  *
  * @module multi-agent-orchestrator/config/roles
  */
@@ -36,7 +38,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { assertAgentDefinition, TOOL_NAME } from "./schema.js";
 import { DEFAULT_BACKGROUND_MODE, DEFAULT_ENABLE_RUN_IN_BACKGROUND, DEFAULT_MAX_DEPTH, DEFAULT_PROVIDER } from "./defaults.js";
-import { specialistFilter } from "../permissions/agent-permissions.js";
+import { FS_TOOLS, SEARCH_TOOLS, specialistFilter } from "../permissions/agent-permissions.js";
 import { SPECIALIST_IDS } from "../agents/catalog.js";
 
 /** Default file name beside package.json (same convention as model-routing). */
@@ -46,7 +48,7 @@ export const CUSTOM_ROLES_FILE = "roles.json";
 export const KNOWN_ROLES = ["information-producer", "decision-maker", "executor"];
 
 /** Permission keys a custom role may declare (subset of the builtin spec). */
-export const CUSTOM_PERMISSION_KEYS = ["read", "search", "shell", "web", "todo", "jobs", "askUser", "broker"];
+export const CUSTOM_PERMISSION_KEYS = ["read", "search", "shell", "web", "todo", "jobs", "askUser", "broker", "write", "edit"];
 
 /**
  * Build a full specialist definition from a custom role entry, mirroring the
@@ -89,31 +91,43 @@ export function customSpecialist(id, entry) {
 			throw new TypeError(`roles: "${id}".permissions has unknown key "${key}" (known: ${CUSTOM_PERMISSION_KEYS.join(", ")})`);
 		}
 	}
-	for (const key of ["read", "search"]) {
+	for (const [key, universe] of [["read", FS_TOOLS], ["search", SEARCH_TOOLS]]) {
 		const list = permissions[key];
 		if (list !== void 0 && (!Array.isArray(list) || list.some((n) => typeof n !== "string" || n.length === 0))) {
 			throw new TypeError(`roles: "${id}".permissions.${key} must be an array of tool names`);
 		}
+		for (const name of list ?? []) {
+			if (!universe.includes(name)) {
+				throw new TypeError(`roles: "${id}".permissions.${key} names unknown tool "${name}" (known: ${universe.join(", ")})`);
+			}
+		}
 	}
-	for (const key of ["shell", "web", "todo", "jobs", "askUser", "broker"]) {
+	for (const key of ["shell", "web", "todo", "jobs", "askUser", "broker", "write", "edit"]) {
 		const flag = permissions[key];
 		if (flag !== void 0 && typeof flag !== "boolean") {
 			throw new TypeError(`roles: "${id}".permissions.${key} must be a boolean`);
 		}
 	}
+	// `write`/`edit` are rendered through the read surface so the same
+	// specialistFilter code path admits them (and the runtime catalog can
+	// detect writer roles for the single-writer lock).
+	const read = [...(permissions.read ?? [])];
+	if (permissions.write === true) read.push("write");
+	if (permissions.edit === true) read.push("edit");
+	const normalizedPermissions = { ...permissions, read };
 	const def = {
 		id,
 		toolName: `subagent_${id}`,
 		role: entry.role,
 		personaFile: entry.personaFile,
 		description: entry.description,
-		permissions,
+		permissions: normalizedPermissions,
 		provider: DEFAULT_PROVIDER,
 		backgroundMode: DEFAULT_BACKGROUND_MODE,
 		enableRunInBackground: DEFAULT_ENABLE_RUN_IN_BACKGROUND,
 		maxDepth: typeof entry.maxDepth === "number" ? entry.maxDepth : DEFAULT_MAX_DEPTH,
 		filterFor(platform) {
-			return specialistFilter(permissions, platform);
+			return specialistFilter(normalizedPermissions, platform);
 		},
 		get filter() {
 			return this.filterFor(process.platform);

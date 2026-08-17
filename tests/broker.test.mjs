@@ -160,6 +160,22 @@ test("retry budget caps attempts per specialist per task", () => {
 	assert.equal(broker.gate(exec("subagent_oracle", "a4", { prompt: "TASK_ID: t1\nWhy?" })).ok, true);
 });
 
+test("parallel non-writer delegations cannot overshoot task or specialist budgets", () => {
+	const broker = createBroker({ maxDelegationsPerTask: 1, maxAttemptsPerSpecialist: 1, maxConsecutiveFailures: 1 });
+	const mk = (token) => exec(EXPLORER, token, { prompt: "TASK_ID: t1\nFind x." });
+	const first = mk("p1");
+	const second = mk("p2");
+	assert.equal(broker.gate(first).ok, true);
+	// The first call is still in flight; the second gate must see its reservation.
+	assert.equal(broker.gate(second).ok, false, "in-flight reservations must count against the caps");
+	// Deny/cancel path: settle without dispatch releases the reservation.
+	broker.settle(second, { text: "denied", isError: true });
+	// The original call dispatches and settles normally.
+	broker.markDispatched(first);
+	broker.settle(first, { text: "TASK_ID: t1\nSTATUS: SUCCESS\nSUMMARY: found.", isError: false });
+	assert.equal(broker.snapshot("session-A").tasks[0].delegationsUsed, 1);
+});
+
 test("consecutive non-SUCCESS results hard-stop the task", () => {
 	const broker = createBroker({ maxConsecutiveFailures: 2 });
 	const mk = (token, prompt) => exec(EXPLORER, token, { prompt: `TASK_ID: t1\n${prompt}` });
@@ -457,6 +473,27 @@ test("persisted consecutive failures hard-stop a restarted task", (t) => {
 	assert.match(gate.reason, /consecutive non-SUCCESS/);
 });
 
+test("report and snapshot load persisted state without a prior gate", (t) => {
+	const root = tempStore(t);
+	const store = createArtifactStore(root);
+	const broker = createBroker({}, store);
+	const e = exec(FIXER, "t1", { prompt: "TASK_ID: t1\nFix it." });
+	broker.gate(e);
+	broker.markDispatched(e);
+	broker.settle(e, {
+		text: "TASK_ID: t1\nSTATUS: SUCCESS\nSUMMARY: fixed.\nCHANGES:\n  a: b\nVERIFICATION:\n  npm test [risk=R1,exit=0,counts=3]: 3 passed",
+		isError: false
+	});
+
+	const reloaded = createBroker({}, store);
+	const report = reloaded.report("session-A");
+	assert.match(report, /task "t1"/, report);
+	assert.match(report, /npm test/, report);
+	assert.match(report, /exit=0, success/, report);
+	const snap = reloaded.snapshot("session-A");
+	assert.equal(snap.tasks[0].delegationsUsed, 1);
+});
+
 test("report supports taskId filtering and artifact listing", (t) => {
 	const root = tempStore(t);
 	const store = createArtifactStore(root);
@@ -580,6 +617,18 @@ test("deriveTaskState requires a passed Oracle review when Oracle was consulted"
 	assert.equal(deriveTaskState(t), "VERIFIED", "review pending → verified but not complete");
 	t.results.push({ tool: "subagent_oracle", status: "SUCCESS" });
 	assert.equal(deriveTaskState(t), "COMPLETE", "review passed → complete");
+});
+
+test("deriveTaskState requires the Oracle review to come after implementation", () => {
+	const mk = () => ({ taskId: "t1", results: [
+		{ tool: "subagent_oracle", status: "SUCCESS" },
+		{ tool: FIXER_DELEGATION, status: "SUCCESS" },
+		{ tool: "subagent_observer", status: "SUCCESS" }
+	], receipts: [], attempts: new Map(), consecutiveFailures: 0, delegationsUsed: 0, workspaceFingerprint: null, duplicateReceipts: 0 });
+	const t = mk();
+	assert.equal(deriveTaskState(t), "VERIFIED", "a pre-fix Oracle consultation is not a post-change review");
+	t.results.push({ tool: "subagent_oracle", status: "SUCCESS" });
+	assert.equal(deriveTaskState(t), "COMPLETE", "a later Oracle SUCCESS closes the review loop");
 });
 
 test("an Oracle BLOCKED review blocks the task and the gate denies further delegations", () => {

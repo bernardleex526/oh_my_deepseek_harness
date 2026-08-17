@@ -169,7 +169,7 @@ export function createArtifactStore(root = resolveStoreRoot()) {
 
 		/**
 		 * List every session that has persisted state or artifacts.
-		 * @returns {string[]} session keys (newest first).
+		 * @returns {string[]} session keys, newest first.
 		 */
 		listSessions() {
 			if (!enabled) return [];
@@ -181,7 +181,23 @@ export function createArtifactStore(root = resolveStoreRoot()) {
 					names.add(name.endsWith(".json") ? name.slice(0, -5) : name);
 				}
 			}
-			return [...names].sort();
+			const rows = [];
+			for (const name of names) {
+				let newest = 0;
+				for (const candidate of [
+					join(root, "state", `${name}.json`),
+					join(root, "artifacts", name)
+				]) {
+					try {
+						newest = Math.max(newest, statSync(candidate).mtimeMs);
+					} catch {
+						// candidate does not exist; keep the other timestamp
+					}
+				}
+				rows.push({ name, newest });
+			}
+			rows.sort((a, b) => b.newest - a.newest);
+			return rows.map((row) => row.name);
 		},
 
 		/** Ensure the store root exists (no-op when disabled). */

@@ -46,7 +46,7 @@ const METADATA = join(PRESET_DIR, "preset.yml");
  * cross-platform via node:path so it works on both CI runners.
  */
 const DEFAULT_CHECKOUT = join(resolve(ROOT), "node_modules", "@deepseek-ai");
-const CHECKOUT = process.argv[2] ?? process.env.DSH_CHECKOUT ?? DEFAULT_CHECKOUT;
+const CHECKOUT = resolve(process.argv[2] ?? process.env.DSH_CHECKOUT ?? DEFAULT_CHECKOUT);
 const CHECKOUT_AVAILABLE = existsSync(join(CHECKOUT, "dsh-base"));
 
 /** Load js-yaml from the harness checkout (the loader dialect lives there). */
@@ -286,6 +286,7 @@ export async function validate() {
 	//    import siblings and node builtins (`node:` prefix) — never bare
 	//    package specifiers.
 	check(existsSync(join(PRESET_DIR, "orchestration.mjs")), "preset dir missing orchestration.mjs");
+	check(existsSync(join(PRESET_DIR, "runtime-catalog.mjs")), "preset dir missing runtime-catalog.mjs");
 	check(existsSync(join(PRESET_DIR, "broker.mjs")), "preset dir missing broker.mjs");
 	check(existsSync(join(PRESET_DIR, "protocol.mjs")), "preset dir missing protocol.mjs");
 	check(existsSync(join(PRESET_DIR, "artifacts.mjs")), "preset dir missing artifacts.mjs");
@@ -297,13 +298,20 @@ export async function validate() {
 	check(rowSource.includes('from "./broker.mjs"'), "orchestration.mjs must import ./broker.mjs");
 	check(rowSource.includes('from "./policy.mjs"'), "orchestration.mjs must import ./policy.mjs");
 	check(rowSource.includes('from "./bootstrap.mjs"'), "orchestration.mjs must import ./bootstrap.mjs");
+	check(rowSource.includes('from "./runtime-catalog.mjs"'), "orchestration.mjs must import ./runtime-catalog.mjs");
 	const brokerSource = existsSync(join(PRESET_DIR, "broker.mjs"))
 		? readFileSync(join(PRESET_DIR, "broker.mjs"), "utf8")
 		: "";
 	check(brokerSource.includes('from "./protocol.mjs"'), "broker.mjs must import ./protocol.mjs");
 	check(brokerSource.includes('from "./artifacts.mjs"'), "broker.mjs must import ./artifacts.mjs");
+	const runtimeCatalogSource = existsSync(join(PRESET_DIR, "runtime-catalog.mjs"))
+		? readFileSync(join(PRESET_DIR, "runtime-catalog.mjs"), "utf8")
+		: "";
+	check(/DELEGATION_TOOLS\s*=\s*\[/.test(runtimeCatalogSource), "runtime-catalog.mjs must export DELEGATION_TOOLS");
+	check(/WRITER_DELEGATION_TOOLS\s*=\s*\[/.test(runtimeCatalogSource), "runtime-catalog.mjs must export WRITER_DELEGATION_TOOLS");
 	const moduleFiles = [
 		["orchestration.mjs", rowSource],
+		["runtime-catalog.mjs", runtimeCatalogSource],
 		["broker.mjs", brokerSource],
 		["protocol.mjs", existsSync(join(PRESET_DIR, "protocol.mjs")) ? readFileSync(join(PRESET_DIR, "protocol.mjs"), "utf8") : ""],
 		["artifacts.mjs", existsSync(join(PRESET_DIR, "artifacts.mjs")) ? readFileSync(join(PRESET_DIR, "artifacts.mjs"), "utf8") : ""],
@@ -312,6 +320,26 @@ export async function validate() {
 	];
 	for (const [file, source] of moduleFiles) {
 		check(!/^\s*import\s+.*\s+from\s+["'](?!\.|node:)/m.test(source), `${file} must only import siblings and node builtins (preset dir has no node_modules)`);
+	}
+
+	// The runtime catalog must name exactly the delegation rows compiled into
+	// the composition (this is what makes custom roles visible to the
+	// Orchestrator allow-list and the single-writer set).
+	const compositionText = readFileSync(COMPOSITION, "utf8");
+	try {
+		const runtimeCatalog = await import(pathToFileURL(join(PRESET_DIR, "runtime-catalog.mjs")).href);
+		const runtimeTools = Array.isArray(runtimeCatalog.DELEGATION_TOOLS) ? runtimeCatalog.DELEGATION_TOOLS : [];
+		check(runtimeTools.length > 0, "runtime-catalog.mjs DELEGATION_TOOLS must not be empty");
+		for (const tool of runtimeTools) {
+			check(typeof tool === "string" && compositionText.includes(`toolName: ${tool}`),
+				`runtime-catalog.mjs names delegation tool "${tool}" but the composition does not register it`);
+		}
+		const runtimeWriters = Array.isArray(runtimeCatalog.WRITER_DELEGATION_TOOLS) ? runtimeCatalog.WRITER_DELEGATION_TOOLS : [];
+		for (const tool of runtimeWriters) {
+			check(runtimeTools.includes(tool), `runtime-catalog.mjs writer tool "${tool}" is missing from DELEGATION_TOOLS`);
+		}
+	} catch (error) {
+		check(false, `runtime-catalog.mjs could not be loaded: ${String(error)}`);
 	}
 
 	if (errors.length > 0) {

@@ -8,7 +8,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +28,10 @@ const CHECKOUT = process.env.DSH_CHECKOUT ?? DEFAULT_CHECKOUT;
 function tempRoot(routing) {
 	const dir = mkdtempSync(join(tmpdir(), "mao-routing-"));
 	if (routing !== void 0) writeFileSync(join(dir, MODEL_ROUTING_FILE), JSON.stringify(routing), "utf8");
+	// renderComposition(root) reads the orchestrator persona from `root`;
+	// give temp roots a minimal marker-complete persona.
+	mkdirSync(join(dir, "prompts"), { recursive: true });
+	writeFileSync(join(dir, "prompts", "orchestrator.md"), "# Orchestrator\n\n{{ROUTING_TABLE}}\n{{ENVELOPE}}\n{{DELEGATION_TOOLS}}\n{{AGENT_ROSTER}}\n", "utf8");
 	return dir;
 }
 

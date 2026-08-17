@@ -29,7 +29,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { PRESET_ID } from "../src/config/defaults.js";
 import { SPECIALISTS } from "../src/agents/catalog.js";
-import { SUBAGENT_TOOLS, ORCHESTRATOR_ALLOW } from "../src/permissions/agent-permissions.js";
+import { SUBAGENT_TOOLS } from "../src/permissions/agent-permissions.js";
 import { DEFAULT_BOOTSTRAP_ALLOW } from "../src/orchestration/bootstrap.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -39,7 +39,7 @@ const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
  * via node:path so it works on both CI runners.
  */
 const DEFAULT_CHECKOUT = join(resolve(ROOT), "node_modules", "@deepseek-ai");
-const CHECKOUT = process.argv[2] ?? process.env.DSH_CHECKOUT ?? DEFAULT_CHECKOUT;
+const CHECKOUT = resolve(process.argv[2] ?? process.env.DSH_CHECKOUT ?? DEFAULT_CHECKOUT);
 
 /** Load a package module from the checkout by package name. */
 async function loadPackage(name) {
@@ -385,7 +385,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 		console.log("  delegation tools:", SUBAGENT_TOOLS.join(", "));
 		console.log("  boundary enforced: write/edit/bash/pwsh hidden");
 		console.log(`  child filter names validated: ${result.childFilterNames} (${process.platform})`);
-		console.log("  orchestrator surface:", ORCHESTRATOR_ALLOW.join(", "));
+		console.log("  orchestrator surface:", result.toolNames.join(", "));
 		console.log(`  real-chain probes: gateDenied=${result.probes.gateDenied} envelopeBlocked=${result.probes.envelopeBlocked} askSerialized=${result.probes.askSerialized} routeAdvice=${result.probes.routeAdvice}`);
 	}).catch((error) => {
 		console.error("smoke-mount FAILED:", error);

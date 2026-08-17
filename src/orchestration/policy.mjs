@@ -135,7 +135,7 @@ export const ROUTING_RULES = [
 			"UI 渲染",
 			"界面"
 		],
-		note: "运行事实：程序、UI、日志、截图、测试输出"
+		note: "运行事实：程序、UI、日志、已有截图、测试输出"
 	},
 	{
 		agent: "oracle",
