@@ -10,13 +10,19 @@ Harness 中实现“调查 → 判断 → 执行 → 验证”的完整工作流
 的 Agent preset 选择器中与 `standard`（标准模式）、`code`、`minimal`、
 `cordis` 并列选择，随时切换，互不影响。
 
+> ⚠️ **最终版声明（FINAL RELEASE）**：因开发者没有 Money 承担 DeepSeek 的
+> API，本项目自 **v0.1.6（2026-08-17）** 起停止功能迭代，**这是最后一版**。
+> 后续问题请自行解决；欢迎 fork / PR，但作者不再承诺响应 issue 或发布新版本。
+
 ---
 
 ## 更新记录（简要）
 
-> 详细变更见 [CHANGELOG.md](CHANGELOG.md)。自 `6a252cd` 起共五轮更新：
+> 详细变更见 [CHANGELOG.md](CHANGELOG.md)。自 `6a252cd` 起共六轮更新，**v0.1.6 为最终版**：
 
 - **v0.1.6（2026-08-17）** — 审查修复批次：自定义角色真正可见且可写（单写者锁同步）、并行委派预算预留、workspace fingerprint 内容哈希、持久化状态即时可读、broker_status 输出 receipt 详情、Linux CI 修复。
+- **v0.1.5（2026-08-16）** — 轨迹计数器客户端插件（`We need… vs Let me…`）：
+  在 composer dock 实时显示首行轨迹分布，bundle 可复现构建与单测覆盖。
 - **v0.1.4（2026-08-16）** — 融合 dsh-anchored-standard 的**锚定首请求**：
   新会话首个模型请求仅暴露控制平面工具，首个信号后自动晋升完整委派面；
   `$DSH_ORCHESTRATION_BOOTSTRAP` 可关闭/自定义。
@@ -35,6 +41,31 @@ Harness 中实现“调查 → 判断 → 执行 → 验证”的完整工作流
   锁改为 workspace 粒度并修复 ask 审批洞、TASK_ID 协议、每任务预算机械
   强制、envelope 结果门禁（坏信封被 block）、`broker_status` 报告工具；
   构建/安装适配（YAML 安全、force 整目录替换）。
+
+
+## 更新细则（v0.1.6）
+
+本版本为最终版，主要修复上一轮审查发现的问题：
+
+- **自定义角色运行时可见**：新增 `runtime-catalog.mjs`；dist 构建复制内置目录，
+  `npm run build:local` 按 `roles.json` 重新生成。`orchestration.mjs` 从该目录
+  展开 Orchestrator allow-list，自定义 `subagent_<id>` 不再被根代理边界隐藏。
+- **自定义 executor 可写**：`roles.json` 的权限现在支持显式 `write` / `edit`
+  布尔开关；声明后可获得写工具，并自动进入单写者锁集合。
+- **并行预算预留**：broker 在 `tools/pre-execute` gate 阶段即预留任务总委派、
+  每 specialist 尝试、连续失败容量；settle / 取消 / deny / throw 路径按 token
+  释放，并行委派无法再绕过 12/3/3 机械上限。
+- **workspace fingerprint 内容哈希**：`git status --porcelain` 从长度改为
+  sha256 哈希；Observer / 非 writer settle 时重新采样，外部改动不会再被
+  误判为“同一 workspace”。
+- **持久化即时可读**：`broker_status` / `snapshot()` 会先加载
+  `$DSH_ORCHESTRATION_HOME` 下的持久化状态，进程重启后无需先触发委派即可查看。
+- **broker_status receipt 详情**：现在输出每个 receipt 的 risk / exit /
+  success / fingerprint / result，Fixer 与 Observer 跑测试前可据此决定是否跳过。
+- **测试与 CI 修复**：Linux 下 `tests/artifacts.test.mjs` 不再失败；
+  `renderComposition(root)` 尊重传入 root；路由表头不再重复渲染。
+- **CLI 兼容自定义角色**：持久化状态记录 `writerTools`，`status` / `metrics`
+  CLI 对自定义 executor 的状态推导一致。
 
 ---
 
@@ -146,6 +177,28 @@ node scripts/validate.mjs     # 真实 loader 方言解析 + 行名解析 + 过�
 node --test                   # 测试套件（含真实挂载集成测试）
 node scripts/smoke-mount.mjs  # 真实启动 harness 并挂载 preset 的集成验证
 ```
+
+---
+
+## 使用指南（速查）
+
+> 完整步骤见上文的“快速开始”与下文的“详细使用说明”；这里是常用命令速查。
+
+| 场景 | 命令 / 操作 |
+| --- | --- |
+| 直接安装已构建 preset | 复制 `preset/orchestrator/` 到 `$DSH_HOME/.agent-presets/orchestrator/` |
+| 重新构建标准版（不读本地配置） | `node scripts/build.mjs` |
+| 重新构建本地版（读 `model-routing.json` / `roles.json`） | `npm run build:local` |
+| 安装 / 覆盖安装 | `node scripts/install.mjs --force` |
+| 启用模式 | Web 会话的 Agent preset chip 选择“多智能体编排”，或在 Settings 设为默认 |
+| 验证安装 | `npm run validate` → `npm test` → `npm run smoke` |
+| 配置多模型子代理 | 复制 `model-routing.json.example` 为 `model-routing.json`，再 `npm run build:local` |
+| 配置自定义角色 | 新建 `roles.json` + `prompts/<id>.md`，再 `npm run build:local` |
+| 开启结果/状态持久化 | 设置 `$DSH_ORCHESTRATION_HOME`，用 `npm run status` / `npm run metrics` 查看 |
+| 覆盖预算 | 设置 `$DSH_ORCHESTRATION_BUDGETS='{"maxDelegationsPerTask":20,...}'` |
+| 关闭/自定义锚定首请求 | 设置 `$DSH_ORCHESTRATION_BOOTSTRAP=0`，或给 JSON 工具数组 |
+| 日常委派纪律 | 每次委派首行写 `TASK_ID: <id>`；重试沿用 id，新子问题换新 id |
+| 查询任务状态 | Orchestrator 调 `broker_status`；Fixer/Observer 跑测试前先查 receipt |
 
 ---
 
@@ -388,7 +441,23 @@ node --test
 
 ---
 
-## 限制与已知问题 / 兼容范围
+## 暂存问题 / 限制与已知问题（v0.1.6 最终版）
+
+> 以下问题在最终版中**暂存（pending）**，不再安排官方修复。由于开发者已无
+> Money 承担 DeepSeek API，请自行解决或 fork 处理。
+
+### 暂存问题速览
+
+1. **Explorer / Observer 的 shell 不是权限层只读**——理论上可经 shell 写文件；
+   在 approval=never 且 sandbox=workspace-write 的部署中风险更高。
+2. **无跨进程全局锁**——单写者锁与 broker 状态均为进程本地，多进程同项目仍可能并发写。
+3. **Observer 不能截图 / 驱动浏览器**——只能读已有图片、日志、测试输出。
+4. **无 continuable / 后台委派**——六个 specialist 均为 one-shot，并行靠同消息多工具调用。
+5. **web_fetch 未启用**——保持宿主默认 SSRF 防护；且无法经 `toolFilter` 下发给子代理。
+6. **无真实模型端到端测试**——CI 只验证挂载 / 权限 / 工具链探针，不跑付费 LLM 回合。
+7. **工具结果整体裁剪**——pruner 无字段排除，长结果连同 envelope 一起裁剪。
+8. **动态模型选择 / Web 运行面板未实现**——模型路由为构建期静态 `agentOptions`。
+
 
 以下限制都是**如实**记录，而非未支持的借口——它们来自当前 DSH rc 版本的真实
 能力边界，或是有意的架构取舍。
@@ -575,6 +644,15 @@ node --test
   `web_fetch` 由 preset 行注册在 agent 平面，无法通过 `toolFilter`/`restrict`
   下发给子代理（`restrict` 只接受宿主/祖先层注册的全局工具名）
 - **如何贡献？** 欢迎 PR：新 specialist、路由规则、权限调整、测试
+
+---
+
+## 最终声明
+
+> **因开发者没有 Money 承担 DeepSeek 的 API，所以该版本为最后一版，有问题自行解决。**
+>
+> 本项目自 **v0.1.6（2026-08-17）** 起停止维护：不再承诺新功能、修复、issue 响应或
+> API 适配。你仍可 fork 并自行修改，仓库采用 MIT 许可证。感谢使用。
 
 ---
 
